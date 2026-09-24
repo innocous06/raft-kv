@@ -20,12 +20,12 @@ This project builds upon foundational research in distributed systems, consensus
 
 3. **Wing, J. M., & Gong, C. (1993).**
    *Testing and Verifying Concurrent Objects.*
-   Journal of Parallel and Distributed Computing, 17(1-2), 164–182.
+   Journal of Parallel and Distributed Computing, 17(1-2), 164-182.
    *Reference for the sequential consistency / linearizability search algorithm implemented in `harness/linearizability.go`.*
 
 4. **Gibbons, P. B., & Korach, E. (1997).**
    *Testing Shared Memories.*
-   SIAM Journal on Computing, 26(4), 1208–1244.
+   SIAM Journal on Computing, 26(4), 1208-1244.
    *Established that verifying linearizability for arbitrary concurrent executions is NP-complete.*
 
 5. **Lamport, L. (2002).**

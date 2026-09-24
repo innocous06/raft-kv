@@ -1,6 +1,6 @@
 # Raft KV Architecture & Specification
 
-`raft-kv` is a production-grade, fault-tolerant distributed Key-Value store implementing the Raft consensus algorithm (Ongaro & Ousterhout, 2014) in Go. It is designed around a strictly decoupled, transport-agnostic core capable of running seamlessly over simulated networks for deterministic chaos testing and real HTTP/gRPC networks for production multi-process clusters.
+`raft-kv` is an educational, fault-tolerant distributed Key-Value store prototype implementing the Raft consensus algorithm (Ongaro & Ousterhout, 2014) in Go. It is designed around a strictly decoupled, transport-agnostic core capable of running seamlessly over simulated networks for deterministic chaos testing and real HTTP/gRPC networks for multi-process clusters.
 
 ---
 
@@ -42,7 +42,7 @@
 - Pure, transport-agnostic consensus engine adhering strictly to Raft Paper Figure 2.
 - Single-threaded actor event loop per node owning all mutable state: guarantees zero lock contention and no internal deadlocks.
 - Implements:
-  - Randomized election timeouts (150–300ms).
+  - Randomized election timeouts (150-300ms).
   - Leader election & heartbeats.
   - Log replication with fast conflict-term backoff optimization.
   - Figure 8 commit rule (leaders only commit entries from their current term).
