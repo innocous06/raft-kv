@@ -20,14 +20,14 @@ func main() {
 	)
 	flag.Parse()
 
-	fmt.Println("=================================================================")
-	fmt.Printf("🔥 Starting Raft Chaos Injection Engine\n")
-	fmt.Printf("   Nodes: %d | Duration: %v | Seed: %d\n", *nodes, *duration, *seed)
-	fmt.Println("=================================================================")
+	fmt.Println("-----------------------------------------------------------------")
+	fmt.Printf("[CHAOS] Raft Consensus Fault-Injection & Invariant Suite\n")
+	fmt.Printf("        Nodes: %d | Duration: %v | Seed: %d\n", *nodes, *duration, *seed)
+	fmt.Println("-----------------------------------------------------------------")
 
 	c, err := harness.NewCluster(*nodes, false, "", *seed)
 	if err != nil {
-		fmt.Printf("❌ Failed to create cluster: %v\n", err)
+		fmt.Printf("[ERROR] Failed to create cluster: %v\n", err)
 		os.Exit(1)
 	}
 	defer c.Stop()
@@ -39,13 +39,13 @@ func main() {
 	history := harness.NewHistoryRecorder()
 	c.Start()
 
-	fmt.Print("⏳ Waiting for initial leader election... ")
+	fmt.Print("[INIT] Awaiting initial leader election... ")
 	leader, err := c.WaitLeader(3 * time.Second)
 	if err != nil {
 		fmt.Printf("Failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("✓ Elected leader: %s\n\n", leader)
+	fmt.Printf("Elected leader: %s\n\n", leader)
 
 	var wg sync.WaitGroup
 	stopChaos := make(chan struct{})
@@ -67,16 +67,16 @@ func main() {
 				action := rng.Intn(4)
 				switch action {
 				case 0:
-					fmt.Println("💥 [CHAOS] Injecting 20% packet drop rate...")
+					fmt.Println("[CHAOS] Injected 20% packet drop rate")
 					c.SimNet().SetDropRate(0.20)
 				case 1:
 					maj, min := harness.PartitionMajorityMinority(c)
-					fmt.Printf("⚡ [CHAOS] Network Partition: Majority=%v vs Minority=%v\n", maj, min)
+					fmt.Printf("[CHAOS] Network Split: Majority=%v vs Minority=%v\n", maj, min)
 				case 2:
-					fmt.Println("💚 [CHAOS] Healing network partition...")
+					fmt.Println("[CHAOS] Healing network partitions")
 					harness.HealNetwork(c)
 				case 3:
-					fmt.Println("⏱️  [CHAOS] Injecting 30ms latency jitter...")
+					fmt.Println("[CHAOS] Injected 30ms latency jitter")
 					c.SimNet().SetDelays(15*time.Millisecond, 40*time.Millisecond)
 				}
 			}
@@ -152,33 +152,33 @@ func main() {
 	close(stopChaos)
 	wg.Wait()
 
-	fmt.Println("\n=================================================================")
-	fmt.Println("📊 Chaos Verification Report")
-	fmt.Println("=================================================================")
+	fmt.Println("\n-----------------------------------------------------------------")
+	fmt.Println("[REPORT] Raft Consensus Invariant & Consistency Summary")
+	fmt.Println("-----------------------------------------------------------------")
 
 	// Verify invariants
 	select {
 	case err := <-errCh:
-		fmt.Printf("❌ Invariant Failure: %v\n", err)
+		fmt.Printf("[FAILURE] Safety Invariant Violated: %v\n", err)
 		os.Exit(1)
 	default:
-		fmt.Println("✓ All 5 Raft Safety Invariants Maintained:")
-		fmt.Println("   1. Election Safety: PASS (at most 1 leader per term)")
-		fmt.Println("   2. Leader Append-Only: PASS (no leader truncation)")
-		fmt.Println("   3. Log Matching: PASS (prefix consistency)")
-		fmt.Println("   4. Leader Completeness: PASS (committed entry persistence)")
-		fmt.Println("   5. State Machine Safety: PASS (no diverging applications)")
+		fmt.Println("[OK] Core Safety Invariants Maintained:")
+		fmt.Println("     - Invariant 1 (Election Safety):       PASS [at most 1 leader per term]")
+		fmt.Println("     - Invariant 2 (Leader Append-Only):    PASS [no leader truncation]")
+		fmt.Println("     - Invariant 3 (Log Matching):          PASS [prefix consistency]")
+		fmt.Println("     - Invariant 4 (Leader Completeness):   PASS [committed entries persist]")
+		fmt.Println("     - Invariant 5 (State Machine Safety):  PASS [no diverging executions]")
 	}
 
 	// Verify linearizability
 	ops := history.Ops()
-	fmt.Printf("✓ Checking Linearizability across %d recorded client operations...\n", len(ops))
+	fmt.Printf("\n[VERIFY] Checking Linearizability over %d recorded operations...\n", len(ops))
 	linearizable, errDesc := harness.CheckLinearizability(ops)
 	if !linearizable {
-		fmt.Printf("❌ Linearizability Check FAILED: %s\n", errDesc)
+		fmt.Printf("[FAILURE] Linearizability Check Failed: %s\n", errDesc)
 		os.Exit(1)
 	}
-	fmt.Println("✓ History is Strictly Linearizable (Sequential KV Consistency Verified)")
-	fmt.Println("=================================================================")
-	fmt.Println("🎉 Chaos Scenario Completed Successfully with 0 Invariant Violations!")
+	fmt.Println("[OK] Execution History Verified: Strictly Linearizable (Sequential KV)")
+	fmt.Println("-----------------------------------------------------------------")
+	fmt.Println("[DONE] Chaos Scenario Concluded with 0 Invariant Violations.")
 }

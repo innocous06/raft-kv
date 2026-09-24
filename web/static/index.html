@@ -3,43 +3,49 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Raft KV - Distributed Consensus & Chaos Dashboard</title>
+  <title>Raft Consensus Engine &middot; Distributed Key-Value Store</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <div>
-      <h1>⚡ Raft KV Engine</h1>
-      <p style="color: var(--text-muted); font-size: 0.9rem;">Distributed Replicated Key-Value Consensus Cluster</p>
+    <div class="header-left">
+      <div class="masthead-tag">System Architecture &middot; Ongaro &amp; Ousterhout Consensus Specification</div>
+      <h1>Raft Replicated Key-Value Cluster</h1>
     </div>
-    <div style="display: flex; gap: 12px; align-items: center;">
-      <span id="clusterStatusBadge" class="badge-cluster">Cluster Active</span>
-      <span id="leaderBadge" style="font-size: 0.85rem; color: var(--text-muted);">Leader: <b id="currentLeaderText" style="color: var(--leader);">Detecting...</b></span>
+    <div class="header-meta">
+      <span id="clusterStatusBadge" class="badge-status">[ONLINE]</span>
+      <span>Active Leader: <span id="currentLeaderText" class="current-leader-tag">&mdash;</span></span>
     </div>
   </header>
 
   <div class="grid-main">
-    <!-- Left Column: Cluster Nodes Topology -->
-    <div class="nodes-section">
-      <h2>Cluster Nodes Topology</h2>
+    <!-- Left Column: Cluster Nodes Topology & KV Store -->
+    <div>
+      <div class="section-label">
+        <span>Section 01 &middot; Node Topology</span>
+        <span>Replicated Log Quorum</span>
+      </div>
       <div id="nodesGrid" class="nodes-grid">
         <!-- Dynamically rendered by app.js -->
       </div>
 
-      <div style="margin-top: 24px;">
-        <h2>Replicated KV Store State</h2>
+      <div style="margin-top: 28px;">
+        <div class="section-label">
+          <span>Section 02 &middot; Replicated Key-Value State</span>
+          <span>Committed Entries</span>
+        </div>
         <div class="panel-card" style="padding: 0; overflow-x: auto;">
           <table class="kv-table">
             <thead>
               <tr>
-                <th>Key</th>
-                <th>Value</th>
-                <th>Status</th>
+                <th style="width: 30%;">Key</th>
+                <th style="width: 50%;">Value</th>
+                <th style="width: 20%;">Replication Status</th>
               </tr>
             </thead>
             <tbody id="kvTableBody">
               <tr>
-                <td colspan="3" style="text-align: center; color: var(--text-muted);">No keys stored yet</td>
+                <td colspan="3" style="text-align: center; color: var(--text-muted); padding: 18px;">No entries committed to state machine</td>
               </tr>
             </tbody>
           </table>
@@ -47,17 +53,21 @@
       </div>
     </div>
 
-    <!-- Right Column: Interactive Client & Chaos Studio -->
-    <div class="panel-section">
+    <!-- Right Column: Client Operations & Fault Injection -->
+    <div>
+      <div class="section-label">
+        <span>Section 03 &middot; Client Interface</span>
+        <span>Linearizable Operations</span>
+      </div>
       <div class="panel-card">
-        <h2>Client KV Operations</h2>
+        <h3>Client KV Operations</h3>
         <div class="form-group">
           <label for="opKey">Key</label>
-          <input type="text" id="opKey" placeholder="e.g. user_session">
+          <input type="text" id="opKey" placeholder="e.g. session_token" spellcheck="false">
         </div>
         <div class="form-group">
           <label for="opValue">Value</label>
-          <input type="text" id="opValue" placeholder="e.g. data_payload_123">
+          <input type="text" id="opValue" placeholder="e.g. payload_value_10" spellcheck="false">
         </div>
         <div class="button-group">
           <button id="btnPut" class="btn btn-primary">PUT</button>
@@ -65,26 +75,34 @@
           <button id="btnDelete" class="btn btn-danger">DELETE</button>
           <button id="btnRefresh" class="btn">REFRESH</button>
         </div>
-        <div id="opResult" style="margin-top: 14px; font-family: monospace; font-size: 0.85rem; color: var(--text-muted); min-height: 24px;"></div>
+        <div id="opResult" style="margin-top: 14px; font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); min-height: 22px;"></div>
       </div>
 
+      <div class="section-label" style="margin-top: 20px;">
+        <span>Section 04 &middot; Fault Injection</span>
+        <span>SimNet Chaos Controls</span>
+      </div>
       <div class="panel-card">
-        <h2>Chaos & Network Injection</h2>
-        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">Trigger faults dynamically on the cluster.</p>
+        <h3>Network &amp; Node Chaos</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 14px;">Trigger deterministic network partitions and observe leader re-election across surviving quorums.</p>
         <div class="button-group" style="margin-top: 0;">
           <button id="btnIsolateLeader" class="btn">Isolate Leader</button>
-          <button id="btnPartition" class="btn">Partition (2 vs 3)</button>
+          <button id="btnPartition" class="btn">Split Brain (2 vs 3)</button>
           <button id="btnHeal" class="btn btn-primary">Heal Network</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Bottom Section: Live Event Stream -->
+  <!-- Bottom Section: Telemetry Event Stream -->
+  <div class="section-label">
+    <span>Section 05 &middot; Cluster Telemetry Trace</span>
+    <span>Server-Sent Events Stream (SSE)</span>
+  </div>
   <div class="timeline-section">
     <div class="timeline-header">
-      <h2>Live Cluster Telemetry Trace (SSE Stream)</h2>
-      <button id="btnClearTrace" class="btn" style="padding: 4px 8px; font-size: 0.75rem;">Clear</button>
+      <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Real-Time Protocol Event Stream</span>
+      <button id="btnClearTrace" class="btn" style="padding: 2px 8px; font-size: 0.7rem;">Clear Log</button>
     </div>
     <div id="timelineList" class="timeline-list">
       <!-- Live events stream here -->

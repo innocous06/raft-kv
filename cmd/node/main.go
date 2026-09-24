@@ -42,10 +42,10 @@ func main() {
 }
 
 func runInProcessCluster(n int, port int) {
-	fmt.Printf("\n🚀 Launching In-Process Raft KV Cluster (%d nodes)...\n", n)
+	fmt.Printf("\n[INFO] Initializing In-Process Raft KV Cluster (%d nodes)...\n", n)
 	c, err := harness.NewCluster(n, false, "", time.Now().UnixNano())
 	if err != nil {
-		log.Fatalf("Failed to initialize cluster: %v", err)
+		log.Fatalf("[FATAL] Failed to initialize cluster: %v", err)
 	}
 
 	c.Start()
@@ -53,9 +53,9 @@ func runInProcessCluster(n int, port int) {
 
 	leader, err := c.WaitLeader(3 * time.Second)
 	if err != nil {
-		log.Printf("Waiting for leader: %v", err)
+		log.Printf("[WARN] Waiting for leader: %v", err)
 	} else {
-		fmt.Printf("✓ Initial Leader Elected: %s\n", leader)
+		fmt.Printf("[LEADER] Initial leader elected: %s\n", leader)
 	}
 
 	mux := http.NewServeMux()
@@ -195,21 +195,21 @@ func runInProcessCluster(n int, port int) {
 	server := &http.Server{Addr: addr, Handler: mux}
 
 	go func() {
-		fmt.Printf("🌐 Live Dashboard & API running at: http://127.0.0.1:%d\n", port)
-		fmt.Printf("   Press Ctrl+C to terminate.\n\n")
+		fmt.Printf("[HTTP] Live Dashboard and REST API listening at: http://127.0.0.1:%d\n", port)
+		fmt.Printf("       Press Ctrl+C to terminate.\n\n")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+			log.Fatalf("[FATAL] HTTP server error: %v", err)
 		}
 	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
-	fmt.Println("\nShutting down cluster...")
+	fmt.Println("\n[INFO] Terminating cluster...")
 }
 
 func runSingleNode(nodeID string, port int, peersFlag, dataDir string) {
-	fmt.Printf("\n🚀 Starting Raft KV Node [%s] on port %d...\n", nodeID, port)
+	fmt.Printf("\n[INFO] Starting Raft KV Node [%s] on port %d...\n", nodeID, port)
 
 	peerAddrs := make(map[string]string)
 	var peerIDs []string
@@ -274,14 +274,14 @@ func runSingleNode(nodeID string, port int, peersFlag, dataDir string) {
 	server := &http.Server{Addr: addr, Handler: mux}
 
 	go func() {
-		fmt.Printf("🌐 Node API & Dashboard running at: http://127.0.0.1:%d\n\n", port)
+		fmt.Printf("[HTTP] Node API and Dashboard listening at: http://127.0.0.1:%d\n\n", port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+			log.Fatalf("[FATAL] HTTP server error: %v", err)
 		}
 	}()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
-	fmt.Println("\nStopping node...")
+	fmt.Println("\n[INFO] Stopping node...")
 }
