@@ -19,13 +19,19 @@ type RaftLog struct {
 }
 
 // NewRaftLog initializes a log with given entries and compacted snapshot markers.
+// Entries with Index <= lastIncludedIndex (from prior crash before WAL truncation) are pruned.
 func NewRaftLog(entries []LogEntry, lastIncludedIndex, lastIncludedTerm uint64) *RaftLog {
+	var validEntries []LogEntry
+	for _, e := range entries {
+		if e.Index > lastIncludedIndex {
+			validEntries = append(validEntries, e)
+		}
+	}
 	rl := &RaftLog{
-		entries:           make([]LogEntry, len(entries)),
+		entries:           validEntries,
 		lastIncludedIndex: lastIncludedIndex,
 		lastIncludedTerm:  lastIncludedTerm,
 	}
-	copy(rl.entries, entries)
 	return rl
 }
 
