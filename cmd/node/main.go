@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -57,17 +58,127 @@ func runInProcessCluster(n int, port int) {
 		fmt.Printf("✓ Initial Leader Elected: %s\n", leader)
 	}
 
-	// Choose first node to bind dashboard API server
-	nodeIDs := c.NodeIDs()
-	firstID := nodeIDs[0]
-	firstNode, _ := c.GetNode(firstID)
-	firstSM, _ := c.GetStateMachine(firstID)
-
 	mux := http.NewServeMux()
-	apiServer := api.NewServer(firstID, firstNode, firstSM, c.EventBus(), nil)
 
-	// Mount API
-	mux.Handle("/api/v1/", apiServer.Mux())
+	// Cluster Status for all nodes
+	mux.HandleFunc("/api/v1/cluster/status", func(w http.ResponseWriter, r *http.Request) {
+		var states []raft.NodeState
+		for _, id := range c.NodeIDs() {
+			if n, ok := c.GetNode(id); ok {
+				states = append(states, n.GetNodeState())
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(states)
+	})
+
+	// Unified KV Put routing to current cluster leader
+	mux.HandleFunc("/api/v1/kv/put", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req api.PutRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		res, err := c.Submit(kv.Op{
+			Type:     kv.OpPut,
+			Key:      req.Key,
+			Value:    req.Value,
+			ClientID: req.ClientID,
+			SeqNum:   req.SeqNum,
+		}, 3*time.Second)
+
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(api.APIResponse{Success: true, Value: res.Value})
+	})
+
+	// Unified KV Get routing
+	mux.HandleFunc("/api/v1/kv/get", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		res, err := c.Submit(kv.Op{Type: kv.OpGet, Key: key}, 3*time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(api.APIResponse{Success: true, Value: res.Value})
+	})
+
+	// Unified KV Delete routing
+	mux.HandleFunc("/api/v1/kv/delete", func(w http.ResponseWriter, r *http.Request) {
+		var req api.DeleteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		res, err := c.Submit(kv.Op{
+			Type:     kv.OpDelete,
+			Key:      req.Key,
+			ClientID: req.ClientID,
+			SeqNum:   req.SeqNum,
+		}, 3*time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(api.APIResponse{Success: true, Value: res.Value})
+	})
+
+	// Replicated KV All
+	mux.HandleFunc("/api/v1/kv/all", func(w http.ResponseWriter, r *http.Request) {
+		leader, err := c.WaitLeader(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{})
+			return
+		}
+		if sm, ok := c.GetStateMachine(leader); ok {
+			_ = json.NewEncoder(w).Encode(sm.GetAll())
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]string{})
+		}
+	})
+
+	// Live SSE Telemetry Stream
+	nodeIDs := c.NodeIDs()
+	firstNode, _ := c.GetNode(nodeIDs[0])
+	firstSM, _ := c.GetStateMachine(nodeIDs[0])
+	defaultAPI := api.NewServer(nodeIDs[0], firstNode, firstSM, c.EventBus(), nil)
+	mux.HandleFunc("/api/v1/events/stream", defaultAPI.Mux().ServeHTTP)
+
+	// Live Chaos Control Endpoints
+	mux.HandleFunc("/api/v1/chaos/isolate_leader", func(w http.ResponseWriter, r *http.Request) {
+		isolated, err := harness.IsolateLeader(c)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "isolated": isolated})
+	})
+
+	mux.HandleFunc("/api/v1/chaos/partition", func(w http.ResponseWriter, r *http.Request) {
+		maj, min := harness.PartitionMajorityMinority(c)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "majority": maj, "minority": min})
+	})
+
+	mux.HandleFunc("/api/v1/chaos/heal", func(w http.ResponseWriter, r *http.Request) {
+		harness.HealNetwork(c)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	})
 
 	// Mount Dashboard UI
 	staticFS := http.StripPrefix("/static/", web.Handler())

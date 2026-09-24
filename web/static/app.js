@@ -105,7 +105,13 @@ async function fetchStatus() {
     const res = await fetch("/api/v1/cluster/status");
     if (res.ok) {
       const data = await res.json();
-      state.nodes[data.id] = data;
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          state.nodes[item.id] = item;
+        }
+      } else if (data && data.id) {
+        state.nodes[data.id] = data;
+      }
       renderNodes();
     }
   } catch (e) {}
@@ -229,15 +235,31 @@ document.getElementById("btnClearTrace").addEventListener("click", () => {
   timelineList.innerHTML = "";
 });
 
-// Chaos placeholder triggers
-document.getElementById("btnIsolateLeader").addEventListener("click", () => {
-  appendEvent({ type: "PartitionCreated", details: "Manual chaos: Isolate leader request simulated" });
+// Real Chaos triggers
+document.getElementById("btnIsolateLeader").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/v1/chaos/isolate_leader", { method: "POST" });
+    const data = await res.json();
+    appendEvent({ type: "PartitionCreated", details: `Chaos: Leader ${data.isolated || ""} isolated into minority partition` });
+    fetchStatus();
+  } catch (e) {}
 });
-document.getElementById("btnPartition").addEventListener("click", () => {
-  appendEvent({ type: "PartitionCreated", details: "Manual chaos: 2 vs 3 Split-brain request simulated" });
+
+document.getElementById("btnPartition").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/v1/chaos/partition", { method: "POST" });
+    const data = await res.json();
+    appendEvent({ type: "PartitionCreated", details: `Chaos: Network partitioned: Majority=[${data.majority.join(", ")}] vs Minority=[${data.minority.join(", ")}]` });
+    fetchStatus();
+  } catch (e) {}
 });
-document.getElementById("btnHeal").addEventListener("click", () => {
-  appendEvent({ type: "PartitionHealed", details: "Manual chaos: Heal network partitions request simulated" });
+
+document.getElementById("btnHeal").addEventListener("click", async () => {
+  try {
+    await fetch("/api/v1/chaos/heal", { method: "POST" });
+    appendEvent({ type: "PartitionHealed", details: "Chaos: Network partition healed, full connectivity restored" });
+    fetchStatus();
+  } catch (e) {}
 });
 
 // Initialization
