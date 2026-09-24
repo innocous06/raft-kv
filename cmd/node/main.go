@@ -61,16 +61,21 @@ func runInProcessCluster(n int, port int) {
 	mux := http.NewServeMux()
 
 	// Cluster Status for all nodes
-	mux.HandleFunc("/api/v1/cluster/status", func(w http.ResponseWriter, r *http.Request) {
+	clusterStatusHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		var states []raft.NodeState
 		for _, id := range c.NodeIDs() {
 			if n, ok := c.GetNode(id); ok {
 				states = append(states, n.GetNodeState())
+			} else {
+				states = append(states, raft.NodeState{ID: id, Role: "OFFLINE", IsAlive: false})
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(states)
-	})
+	}
+	mux.HandleFunc("/api/v1/cluster/status", clusterStatusHandler)
+	mux.HandleFunc("/api/v1/cluster", clusterStatusHandler)
+	mux.HandleFunc("/api/v1/status", clusterStatusHandler)
 
 	// Unified KV Put routing to current cluster leader
 	mux.HandleFunc("/api/v1/kv/put", func(w http.ResponseWriter, r *http.Request) {
