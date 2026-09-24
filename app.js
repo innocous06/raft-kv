@@ -150,12 +150,10 @@ function initSimulationEngine() {
   renderNodes();
   renderSimKV();
 
-  // Periodic heartbeat animation in simulation mode
   setInterval(() => {
     if (!state.isSimulated) return;
     const leader = state.nodes[state.simLeader];
     if (leader && leader.isAlive && leader.role === "Leader") {
-      // Pulse alive followers
       for (const id in state.nodes) {
         if (id !== state.simLeader && state.nodes[id].isAlive) {
           state.nodes[id].term = leader.term;
@@ -237,7 +235,6 @@ async function fetchKV() {
   } catch (e) {}
 }
 
-// Client Operation Handlers
 document.getElementById("btnPut").addEventListener("click", async () => {
   const key = document.getElementById("opKey").value.trim();
   const value = document.getElementById("opValue").value.trim();
@@ -407,7 +404,6 @@ document.getElementById("btnClearTrace").addEventListener("click", () => {
   timelineList.innerHTML = "";
 });
 
-// Chaos Handlers
 document.getElementById("btnIsolateLeader").addEventListener("click", async () => {
   if (state.isSimulated) {
     const oldLeader = state.simLeader;
@@ -550,7 +546,6 @@ if (btnRestartTarget) {
   });
 }
 
-// Bootstrap
 if (window.location.hostname.endsWith("github.io")) {
   initSimulationEngine();
 } else {
@@ -560,3 +555,4 @@ if (window.location.hostname.endsWith("github.io")) {
   setInterval(fetchStatus, 1200);
   setInterval(fetchKV, 2000);
 }
+
