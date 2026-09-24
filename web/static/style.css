@@ -331,6 +331,13 @@ input:focus {
   border-color: var(--role-crashed-text);
 }
 
+.btn-sm {
+  padding: 3px 8px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
 /* KV Store Table */
 .kv-table {
   width: 100%;

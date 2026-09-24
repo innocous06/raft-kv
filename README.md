@@ -28,6 +28,36 @@ A production-grade, fault-tolerant distributed key-value store built in Go imple
 +-------------------------------------------------------------+
 ```
 
+### Visual Walkthrough: Leader Crash, Election & Recovery Sequence
+
+```
+   +----------+                 +----------+                 +----------+
+   |  Node 1  |                 |  Node 2  |                 |  Node 3  |
+   | (Leader) |                 |(Follower)|                 |(Follower)|
+   +----+-----+                 +----+-----+                 +----+-----+
+        |                            |                            |
+        |--- Heartbeat (Term 1) ---->|                            |
+        |--- Heartbeat (Term 1) --------------------------------->|
+        |                            |                            |
+     [CRASH]                         |                            |
+        X                            |                            |
+                                     | (Election timer fires)     |
+                                     |                            |
+                                     |-- RequestVote (Term 2) --->|
+                                     |<-- VoteGranted (Term 2) ---|
+                                     |                            |
+                                [BECOMES LEADER]                  |
+                                     |                            |
+                                     |--- Heartbeat (Term 2) ---->|
+                                     |                            |
+     [RECOVERS]                      |                            |
+        |                            |                            |
+        |<-- Heartbeat (Term 2) -----|                            |
+        | (Discovers Term 2 > 1)     |                            |
+        | (Steps down to Follower)   |                            |
+        |                            |                            |
+```
+
 The system is structured into five modular layers:
 
 1. **Raft Core (`internal/raft/`)**: Transport-agnostic consensus engine adhering strictly to Raft Paper Figure 2. Implements a single-threaded Actor event loop that owns all mutable state, guaranteeing zero mutex race conditions.
@@ -113,6 +143,8 @@ Checked continuously by `harness/invariants.go`:
 | `/api/v1/chaos/isolate_leader` | `POST` | &mdash; | Isolate active leader into 1-node partition |
 | `/api/v1/chaos/partition` | `POST` | &mdash; | Split cluster into majority vs minority |
 | `/api/v1/chaos/heal` | `POST` | &mdash; | Restore all network partitions |
+| `/api/v1/chaos/kill` | `POST` | `?node=node-1` | Crash an individual node process |
+| `/api/v1/chaos/restart` | `POST` | `?node=node-1` | Restart a crashed node and reload WAL |
 
 ---
 

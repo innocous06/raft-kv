@@ -90,6 +90,16 @@
           <button id="btnPartition" class="btn">Split Brain (2 vs 3)</button>
           <button id="btnHeal" class="btn btn-primary">Heal Network</button>
         </div>
+        <div style="margin-top: 16px; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
+          <label for="chaosTargetSelect">Target Node Failure Injection</label>
+          <div style="display: flex; gap: 8px; margin-top: 6px;">
+            <select id="chaosTargetSelect" style="flex: 1; background: var(--bg-canvas); border: 1px solid var(--border); color: var(--text-main); padding: 6px 10px; font-family: var(--font-mono); font-size: 0.78rem; border-radius: 2px;">
+              <option value="">Select Node...</option>
+            </select>
+            <button id="btnKillTarget" class="btn btn-danger">Kill</button>
+            <button id="btnRestartTarget" class="btn">Restart</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

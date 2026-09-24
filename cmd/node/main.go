@@ -180,6 +180,50 @@ func runInProcessCluster(n int, port int) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	})
 
+	mux.HandleFunc("/api/v1/chaos/kill", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.URL.Query().Get("node")
+		if nodeID == "" {
+			var body struct {
+				Node string `json:"node"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			nodeID = body.Node
+		}
+		if nodeID == "" {
+			http.Error(w, "missing node parameter", http.StatusBadRequest)
+			return
+		}
+		err := c.CrashNode(nodeID)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "killed": nodeID})
+	})
+
+	mux.HandleFunc("/api/v1/chaos/restart", func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.URL.Query().Get("node")
+		if nodeID == "" {
+			var body struct {
+				Node string `json:"node"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			nodeID = body.Node
+		}
+		if nodeID == "" {
+			http.Error(w, "missing node parameter", http.StatusBadRequest)
+			return
+		}
+		err := c.RestartNode(nodeID)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "restarted": nodeID})
+	})
+
 	// Mount Dashboard UI
 	staticFS := http.StripPrefix("/static/", web.Handler())
 	mux.Handle("/static/", staticFS)

@@ -202,8 +202,9 @@ func (n *Node) checkAndAdvanceCommitIndex() {
 	}
 }
 
-// applyEntries streams committed entries to the apply channel.
+// applyEntries streams committed entries to the apply channel via sequential queue.
 func (n *Node) applyEntries() {
+	var msgs []ApplyMsg
 	for n.commitIndex > n.lastApplied {
 		n.lastApplied++
 		entry, err := n.log.Entry(n.lastApplied)
@@ -217,18 +218,13 @@ func (n *Node) applyEntries() {
 			CommandIndex: entry.Index,
 			CommandTerm:  entry.Term,
 		}
-
-		select {
-		case n.applyCh <- msg:
-		default:
-			// Buffer full - spawn background pusher so event loop doesn't block
-			go func(m ApplyMsg) {
-				n.applyCh <- m
-			}(msg)
-		}
+		msgs = append(msgs, msg)
 
 		n.events.Emit(n.id, events.EntryApplied, n.role.String(), n.currentTerm,
 			fmt.Sprintf("Applied log entry index=%d term=%d", entry.Index, entry.Term), entry)
+	}
+	if len(msgs) > 0 {
+		n.enqueueApply(msgs...)
 	}
 }
 
@@ -290,8 +286,18 @@ func (n *Node) processAppendEntries(req *AppendEntriesRequest) *AppendEntriesRes
 		}
 	}
 
-	// If prevLogIndex is at or after snapshot boundary, check term
-	if req.PrevLogIndex > n.log.LastIncludedIndex() {
+	// If prevLogIndex is behind snapshot boundary, cannot verify; request snapshot
+	if req.PrevLogIndex < n.log.LastIncludedIndex() {
+		return &AppendEntriesResponse{
+			Term:          n.currentTerm,
+			Success:       false,
+			ConflictIndex: n.log.LastIncludedIndex() + 1,
+			ConflictTerm:  0,
+		}
+	}
+
+	// If prevLogIndex is at or after snapshot boundary, check term (§5.3)
+	if req.PrevLogIndex >= n.log.LastIncludedIndex() {
 		term, err := n.log.Term(req.PrevLogIndex)
 		if err != nil || term != req.PrevLogTerm {
 			// Find first index of conflicting term for fast backoff
@@ -336,15 +342,28 @@ func (n *Node) processAppendEntries(req *AppendEntriesRequest) *AppendEntriesRes
 		n.persist()
 	}
 
-	// Rule 5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	// Rule 5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry) (§5.3)
 	if req.LeaderCommit > n.commitIndex {
-		lastNewIndex := req.PrevLogIndex + uint64(len(req.Entries))
-		if req.LeaderCommit < lastNewIndex {
-			n.commitIndex = req.LeaderCommit
+		var newCommit uint64
+		if len(req.Entries) > 0 {
+			lastNewIndex := req.PrevLogIndex + uint64(len(req.Entries))
+			if req.LeaderCommit < lastNewIndex {
+				newCommit = req.LeaderCommit
+			} else {
+				newCommit = lastNewIndex
+			}
 		} else {
-			n.commitIndex = lastNewIndex
+			lastLogIndex := n.log.LastIndex()
+			if req.LeaderCommit < lastLogIndex {
+				newCommit = req.LeaderCommit
+			} else {
+				newCommit = lastLogIndex
+			}
 		}
-		n.applyEntries()
+		if newCommit > n.commitIndex {
+			n.commitIndex = newCommit
+			n.applyEntries()
+		}
 	}
 
 	return &AppendEntriesResponse{

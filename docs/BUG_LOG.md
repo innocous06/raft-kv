@@ -41,3 +41,61 @@ As outlined in the design blueprint, real distributed systems testing surfaces s
 * **Symptom**: If an RPC response was dropped after committing, a client retry could execute the operation twice (e.g. non-idempotent operations).
 * **Root Cause**: State machine did not track client request sequence numbers.
 * **Fix**: Introduced client deduplication table `map[string]ClientRecord` (`LastSeq`, `LastResult`) in `internal/kv/kv.go`. If `SeqNum <= LastSeq`, the cached result is returned immediately without re-executing. The deduplication table is also serialized into snapshots to survive log compaction.
+
+---
+
+### Bug 6: commitIndex Regression on Empty AppendEntries (Heartbeats)
+* **Trigger/Test**: Heartbeat processing in `internal/raft/replication.go`
+* **Symptom**: Followers could regress `commitIndex` backwards if `PrevLogIndex < commitIndex` when receiving an empty heartbeat.
+* **Root Cause**: On empty `AppendEntries`, `lastNewIndex` computed as `req.PrevLogIndex + uint64(len(req.Entries))` equaled `req.PrevLogIndex`. Setting `commitIndex = min(leaderCommit, lastNewIndex)` regressed `commitIndex`.
+* **Fix**: Differentiated empty heartbeats from log entry replication. For heartbeats, the upper bound is `n.log.LastIndex()`. Enforced strict monotonic non-decreasing advancement `if newCommit > n.commitIndex { n.commitIndex = newCommit; n.applyEntries() }`.
+
+---
+
+### Bug 7: Out-of-Order Entry Application via Detached Goroutines
+* **Trigger/Test**: Channel backpressure during rapid commit bursts
+* **Symptom**: `applyCh` channel saturation spawned detached goroutines `go func(m ApplyMsg) { n.applyCh <- m }(msg)`, allowing OS thread scheduling to reorder applied commands.
+* **Root Cause**: Unbounded concurrency on channel overflow discarded FIFO ordering guarantees.
+* **Fix**: Implemented a dedicated thread-safe FIFO `applyQueue []ApplyMsg` guarded by `sync.Cond` and processed by a single sequential worker goroutine (`applierLoop`), preserving strict monotonic log order.
+
+---
+
+### Bug 8: Duplicate Vote Counting on RPC Retransmissions
+* **Trigger/Test**: Unreliable transport with packet duplication or client retransmissions
+* **Symptom**: Candidate node could count multiple vote responses from the same peer, potentially winning leadership with a minority quorum.
+* **Root Cause**: `votesReceived` was an integer counter incremented upon each incoming granted vote response.
+* **Fix**: Replaced integer counter with `votesGranted map[string]bool` initialized with `[n.id] = true`. Inbound votes set `votesGranted[v.peer] = true`, making vote aggregation strictly idempotent.
+
+---
+
+### Bug 9: Snapshot Boundary Term Check Bypass
+* **Trigger/Test**: AppendEntries RPC where `req.PrevLogIndex == n.log.LastIncludedIndex()`
+* **Symptom**: Follower skipped `prevLogTerm` validation when `req.PrevLogIndex` landed exactly on the snapshot boundary.
+* **Root Cause**: Guard was written as `req.PrevLogIndex > n.log.LastIncludedIndex()`, omitting equality.
+* **Fix**: Extended check to `req.PrevLogIndex >= n.log.LastIncludedIndex()` and verified `term == req.PrevLogTerm` against `n.log.LastIncludedTerm()`. If `PrevLogIndex < LastIncludedIndex`, returns fast conflict backoff to trigger `InstallSnapshot`.
+
+---
+
+### Bug 10: Proposal Waiter Registration Race on Fast Commits
+* **Trigger/Test**: In-memory and low-latency environments under concurrent proposals
+* **Symptom**: Proposal completed and applied before `Execute()` registered its channel in `sm.waiters`, causing client timeouts despite successful commits.
+* **Root Cause**: `Propose()` was invoked prior to waiter channel registration under lock.
+* **Fix**: Added `appliedResults map[uint64]OpResult` cache in `StateMachine`. If `applyCommand()` finishes before a waiter is registered, the result is cached. `Execute()` checks the cache under lock before waiting.
+
+---
+
+### Bug 11: Async Snapshot State Divergence
+* **Trigger/Test**: High write throughput concurrent with snapshot compaction
+* **Symptom**: State machine snapshots captured mutations applied *after* the snapshot boundary index.
+* **Root Cause**: `go sm.takeSnapshot(sm.lastApplied)` acquired `RLock()` asynchronously, allowing intervening commands to mutate `sm.data` before serialization.
+* **Fix**: Synchronously deep-cloned state maps under `sm.mu.Lock()` at the moment threshold was reached, passing the immutable clone to the asynchronous serialization goroutine.
+
+---
+
+### Functional Gaps Resolved
+
+1. **Raft Safety Invariant Verifiers**: Fully implemented all 5 Raft safety invariants (`checkElectionSafety`, `checkLeaderAppendOnly`, `checkLogMatching`, `checkLeaderCompleteness`, `checkStateMachineSafety`) with real log and state introspection via `GetLogEntries()`.
+2. **Interactive Node Process Control**: Added `/api/v1/chaos/kill` and `/api/v1/chaos/restart` endpoints and corresponding buttons on each dashboard node card and chaos panel.
+3. **SimNet Duplication & Per-Node Latency**: Added `SetDuplicateRate` and `SetSlowNode` injection to simulate packet duplicates and asymmetric degraded nodes.
+4. **Typographic Sequence Diagram**: Embedded a clean ASCII/Unicode architectural walkthrough in `README.md` illustrating leader crash, election, and recovery.
+

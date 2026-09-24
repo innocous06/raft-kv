@@ -19,8 +19,10 @@ type SimNet struct {
 	handlers     map[string]raft.RPCHandler
 	disconnected map[string]map[string]bool // from -> to -> blocked
 	dropRate     float64
+	dupRate      float64
 	minDelay     time.Duration
 	maxDelay     time.Duration
+	slowNodes    map[string]time.Duration
 	rng          *rand.Rand
 	eventBus     *events.Bus
 }
@@ -30,6 +32,7 @@ func NewSimNet(seed int64) *SimNet {
 	return &SimNet{
 		handlers:     make(map[string]raft.RPCHandler),
 		disconnected: make(map[string]map[string]bool),
+		slowNodes:    make(map[string]time.Duration),
 		rng:          rand.New(rand.NewSource(seed)),
 		eventBus:     events.DefaultBus,
 	}
@@ -47,6 +50,27 @@ func (s *SimNet) SetDropRate(rate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dropRate = rate
+}
+
+// SetDuplicateRate sets message duplication probability [0.0, 1.0].
+func (s *SimNet) SetDuplicateRate(rate float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dupRate = rate
+}
+
+// SetSlowNode configures an artificial latency injection for a specific node.
+func (s *SimNet) SetSlowNode(nodeID string, delay time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.slowNodes[nodeID] = delay
+}
+
+// RemoveSlowNode clears latency injection for a specific node.
+func (s *SimNet) RemoveSlowNode(nodeID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.slowNodes, nodeID)
 }
 
 // SetDelays sets minimum and maximum simulated network delays.
@@ -154,6 +178,30 @@ func (s *SimNet) shouldDrop() bool {
 	return s.rng.Float64() < s.dropRate
 }
 
+// shouldDuplicate checks if an RPC packet should be duplicated.
+func (s *SimNet) shouldDuplicate() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dupRate <= 0 {
+		return false
+	}
+	return s.rng.Float64() < s.dupRate
+}
+
+// getSlowDelay returns artificial latency if either from or to has an active slow node setting.
+func (s *SimNet) getSlowDelay(from, to string) time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var d time.Duration
+	if sDelay, ok := s.slowNodes[from]; ok && sDelay > d {
+		d = sDelay
+	}
+	if sDelay, ok := s.slowNodes[to]; ok && sDelay > d {
+		d = sDelay
+	}
+	return d
+}
+
 // getDelay calculates simulated transit latency.
 func (s *SimNet) getDelay() time.Duration {
 	s.mu.Lock()
@@ -193,13 +241,21 @@ func (s *SimNet) SendRequestVote(ctx context.Context, to string, req *raft.Reque
 		return nil, err
 	}
 
-	delay := s.getDelay()
+	delay := s.getDelay() + s.getSlowDelay(req.CandidateID, to)
 	if delay > 0 {
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+
+	if s.shouldDuplicate() {
+		// Spawn duplicate retransmission asynchronously
+		go func(dupReq *raft.RequestVoteRequest, h raft.RPCHandler) {
+			time.Sleep(10 * time.Millisecond)
+			_, _ = h.HandleRequestVote(dupReq)
+		}(req, handler)
 	}
 
 	return handler.HandleRequestVote(req)
@@ -220,13 +276,20 @@ func (s *SimNet) SendAppendEntries(ctx context.Context, to string, req *raft.App
 		return nil, err
 	}
 
-	delay := s.getDelay()
+	delay := s.getDelay() + s.getSlowDelay(req.LeaderID, to)
 	if delay > 0 {
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+
+	if s.shouldDuplicate() {
+		go func(dupReq *raft.AppendEntriesRequest, h raft.RPCHandler) {
+			time.Sleep(10 * time.Millisecond)
+			_, _ = h.HandleAppendEntries(dupReq)
+		}(req, handler)
 	}
 
 	return handler.HandleAppendEntries(req)
@@ -243,13 +306,20 @@ func (s *SimNet) SendInstallSnapshot(ctx context.Context, to string, req *raft.I
 		return nil, err
 	}
 
-	delay := s.getDelay()
+	delay := s.getDelay() + s.getSlowDelay(req.LeaderID, to)
 	if delay > 0 {
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+
+	if s.shouldDuplicate() {
+		go func(dupReq *raft.InstallSnapshotRequest, h raft.RPCHandler) {
+			time.Sleep(10 * time.Millisecond)
+			_, _ = h.HandleInstallSnapshot(dupReq)
+		}(req, handler)
 	}
 
 	return handler.HandleInstallSnapshot(req)

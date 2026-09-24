@@ -194,20 +194,14 @@ func (n *Node) processInstallSnapshot(req *InstallSnapshotRequest) *InstallSnaps
 		n.lastApplied = req.LastIncludedIndex
 	}
 
-	// Forward snapshot to state machine
+	// Forward snapshot to state machine via ordered queue
 	msg := ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      req.Data,
 		SnapshotIndex: req.LastIncludedIndex,
 		SnapshotTerm:  req.LastIncludedTerm,
 	}
-	select {
-	case n.applyCh <- msg:
-	default:
-		go func(m ApplyMsg) {
-			n.applyCh <- m
-		}(msg)
-	}
+	n.enqueueApply(msg)
 
 	n.events.Emit(n.id, events.SnapshotInstalled, n.role.String(), n.currentTerm,
 		fmt.Sprintf("Installed snapshot index=%d term=%d", req.LastIncludedIndex, req.LastIncludedTerm), nil)

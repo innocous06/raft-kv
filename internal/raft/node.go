@@ -94,9 +94,14 @@ type Node struct {
 	leaderID    string
 
 	// Leader-only volatile state
-	nextIndex  map[string]uint64
-	matchIndex map[string]uint64
-	votesReceived int
+	nextIndex    map[string]uint64
+	matchIndex   map[string]uint64
+	votesGranted map[string]bool
+
+	// Sequential apply queue
+	applyMu    sync.Mutex
+	applyCond  *sync.Cond
+	applyQueue []ApplyMsg
 
 	// Infrastructure & channels
 	storage   Storage
@@ -159,10 +164,12 @@ func NewNode(cfg Config) (*Node, error) {
 		snapRespCh: make(chan installSnapshotResponseMsg, 50),
 		stopCh:     make(chan struct{}),
 		loopDone:   make(chan struct{}),
-		nextIndex:  make(map[string]uint64),
-		matchIndex: make(map[string]uint64),
-		rng:        rand.New(rand.NewSource(time.Now().UnixNano() + int64(hashString(cfg.ID)))),
+		nextIndex:    make(map[string]uint64),
+		matchIndex:   make(map[string]uint64),
+		votesGranted: make(map[string]bool),
+		rng:          rand.New(rand.NewSource(time.Now().UnixNano() + int64(hashString(cfg.ID)))),
 	}
+	n.applyCond = sync.NewCond(&n.applyMu)
 
 	// Restore persistent state from storage if available
 	term, votedFor, entries, err := cfg.Storage.LoadState()
@@ -183,15 +190,13 @@ func NewNode(cfg Config) (*Node, error) {
 	n.lastApplied = snapIndex
 
 	if len(snapData) > 0 {
-		// Forward snapshot restore to state machine
-		go func() {
-			n.applyCh <- ApplyMsg{
-				SnapshotValid: true,
-				Snapshot:      snapData,
-				SnapshotIndex: snapIndex,
-				SnapshotTerm:  snapTerm,
-			}
-		}()
+		// Forward snapshot restore to state machine via ordered queue
+		n.enqueueApply(ApplyMsg{
+			SnapshotValid: true,
+			Snapshot:      snapData,
+			SnapshotIndex: snapIndex,
+			SnapshotTerm:  snapTerm,
+		})
 	}
 
 	return n, nil
@@ -207,6 +212,7 @@ func (n *Node) Start() {
 	n.heartbeatTick = time.NewTicker(n.cfg.HeartbeatInterval)
 
 	n.events.Emit(n.id, events.NodeRestarted, n.role.String(), n.currentTerm, "Node started", nil)
+	go n.applierLoop()
 	go n.run()
 }
 
@@ -216,6 +222,7 @@ func (n *Node) Stop() {
 		return
 	}
 	close(n.stopCh)
+	n.applyCond.Broadcast()
 	if n.transport != nil {
 		n.transport.Unregister(n.id)
 	}
@@ -475,3 +482,64 @@ func hashString(s string) int {
 	}
 	return h
 }
+
+// enqueueApply appends committed messages to the FIFO queue and signals the applier loop.
+func (n *Node) enqueueApply(msgs ...ApplyMsg) {
+	n.applyMu.Lock()
+	n.applyQueue = append(n.applyQueue, msgs...)
+	n.applyCond.Signal()
+	n.applyMu.Unlock()
+}
+
+// applierLoop processes committed ApplyMsgs sequentially in strict log order.
+func (n *Node) applierLoop() {
+	for {
+		n.applyMu.Lock()
+		for len(n.applyQueue) == 0 && atomic.LoadInt32(&n.stopped) == 0 {
+			n.applyCond.Wait()
+		}
+		if atomic.LoadInt32(&n.stopped) == 1 && len(n.applyQueue) == 0 {
+			n.applyMu.Unlock()
+			return
+		}
+		msgs := n.applyQueue
+		n.applyQueue = nil
+		n.applyMu.Unlock()
+
+		for _, msg := range msgs {
+			select {
+			case n.applyCh <- msg:
+			case <-n.stopCh:
+				return
+			}
+		}
+	}
+}
+
+// GetLogEntries returns an immutable snapshot copy of all log entries currently held by this node.
+func (n *Node) GetLogEntries() []LogEntry {
+	if atomic.LoadInt32(&n.stopped) == 1 {
+		return nil
+	}
+	retCh := make(chan any, 1)
+	call := rpcCall{
+		req: internalCall(func() any {
+			return n.log.AllEntries()
+		}),
+		reply: retCh,
+		err:   make(chan error, 1),
+	}
+	select {
+	case n.rpcCh <- call:
+	case <-n.stopCh:
+		return nil
+	}
+
+	select {
+	case val := <-retCh:
+		return val.([]LogEntry)
+	case <-n.stopCh:
+		return nil
+	}
+}
+

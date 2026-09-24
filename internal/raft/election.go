@@ -13,7 +13,8 @@ func (n *Node) startElection() {
 	n.role = Candidate
 	n.currentTerm++
 	n.votedFor = n.id
-	n.votesReceived = 1
+	n.votesGranted = make(map[string]bool)
+	n.votesGranted[n.id] = true
 	n.leaderID = ""
 	n.persist()
 	n.resetElectionTimer()
@@ -29,7 +30,7 @@ func (n *Node) startElection() {
 	majority := (totalNodes / 2) + 1
 
 	// If single node cluster, immediately win election
-	if n.votesReceived >= majority {
+	if len(n.votesGranted) >= majority {
 		n.becomeLeader()
 		return
 	}
@@ -72,14 +73,15 @@ func (n *Node) handleVoteResponse(v voteResponseMsg) {
 	}
 
 	if v.resp.VoteGranted {
-		n.votesReceived++
+		n.votesGranted[v.peer] = true
+		totalVotes := len(n.votesGranted)
 		n.events.Emit(n.id, events.VoteGranted, n.role.String(), n.currentTerm,
-			fmt.Sprintf("Received vote from %s (total: %d)", v.peer, n.votesReceived), nil)
+			fmt.Sprintf("Received vote from %s (total: %d)", v.peer, totalVotes), nil)
 
 		totalNodes := len(n.cfg.Peers) + 1
 		majority := (totalNodes / 2) + 1
 
-		if n.votesReceived >= majority {
+		if totalVotes >= majority {
 			n.becomeLeader()
 		}
 	}
@@ -98,7 +100,7 @@ func (n *Node) becomeLeader() {
 	}
 
 	n.events.Emit(n.id, events.ElectionWon, n.role.String(), n.currentTerm,
-		fmt.Sprintf("Elected leader for term %d with %d votes", n.currentTerm, n.votesReceived), nil)
+		fmt.Sprintf("Elected leader for term %d with %d votes", n.currentTerm, len(n.votesGranted)), nil)
 	n.events.Emit(n.id, events.RoleChanged, n.role.String(), n.currentTerm, "Leader", nil)
 
 	// Send immediate heartbeats to assert leadership

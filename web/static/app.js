@@ -19,15 +19,30 @@ function renderNodes() {
     return;
   }
 
+  const targetSelect = document.getElementById("chaosTargetSelect");
+  const previousSelected = targetSelect ? targetSelect.value : "";
+  if (targetSelect) {
+    targetSelect.innerHTML = `<option value="">Select Node...</option>`;
+  }
+
   let leaderFound = false;
   for (const id of nodeKeys) {
     const node = state.nodes[id];
     const roleLower = (node.role || "follower").toLowerCase();
     const isLeader = roleLower === "leader";
+    const isAlive = node.isAlive !== false && roleLower !== "offline" && roleLower !== "crashed";
 
     if (isLeader) {
       leaderFound = true;
       currentLeaderText.textContent = id;
+    }
+
+    if (targetSelect) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = `${id} [${(node.role || "OFFLINE").toUpperCase()}]`;
+      if (id === previousSelected) opt.selected = true;
+      targetSelect.appendChild(opt);
     }
 
     const card = document.createElement("div");
@@ -42,6 +57,10 @@ function renderNodes() {
         <span><span>Commit Index</span> <b>${node.commitIndex || 0}</b></span>
         <span><span>Last Applied</span> <b>${node.lastApplied || 0}</b></span>
         <span><span>Log Length</span> <b>${node.logLength || 0}</b></span>
+      </div>
+      <div class="node-actions" style="margin-top: 12px; display: flex; gap: 8px; border-top: 1px solid var(--border-subtle); padding-top: 10px;">
+        <button class="btn btn-sm btn-danger" onclick="killNode('${id}')" ${!isAlive ? 'disabled style="opacity: 0.35; cursor: not-allowed;"' : ''}>Kill</button>
+        <button class="btn btn-sm" onclick="restartNode('${id}')" ${isAlive ? 'disabled style="opacity: 0.35; cursor: not-allowed;"' : ''}>Restart</button>
       </div>
     `;
     nodesGrid.appendChild(card);
@@ -259,6 +278,50 @@ document.getElementById("btnHeal").addEventListener("click", async () => {
     fetchStatus();
   } catch (e) {}
 });
+
+window.killNode = async function(id) {
+  if (!id) return;
+  try {
+    const res = await fetch(`/api/v1/chaos/kill?node=${encodeURIComponent(id)}`, { method: "POST" });
+    const data = await res.json();
+    appendEvent({ type: "NodeCrashed", nodeId: id, details: `Chaos: Node ${id} manually stopped` });
+    fetchStatus();
+  } catch (e) {
+    console.error("killNode error:", e);
+  }
+};
+
+window.restartNode = async function(id) {
+  if (!id) return;
+  try {
+    const res = await fetch(`/api/v1/chaos/restart?node=${encodeURIComponent(id)}`, { method: "POST" });
+    const data = await res.json();
+    appendEvent({ type: "NodeRestarted", nodeId: id, details: `Chaos: Node ${id} restarted and rejoining consensus` });
+    fetchStatus();
+  } catch (e) {
+    console.error("restartNode error:", e);
+  }
+};
+
+const btnKillTarget = document.getElementById("btnKillTarget");
+if (btnKillTarget) {
+  btnKillTarget.addEventListener("click", () => {
+    const sel = document.getElementById("chaosTargetSelect");
+    if (sel && sel.value) {
+      window.killNode(sel.value);
+    }
+  });
+}
+
+const btnRestartTarget = document.getElementById("btnRestartTarget");
+if (btnRestartTarget) {
+  btnRestartTarget.addEventListener("click", () => {
+    const sel = document.getElementById("chaosTargetSelect");
+    if (sel && sel.value) {
+      window.restartNode(sel.value);
+    }
+  });
+}
 
 // Bootstrap
 setupEventStream();

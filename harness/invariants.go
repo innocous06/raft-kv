@@ -11,22 +11,24 @@ import (
 
 // InvariantChecker verifies Raft's five core safety invariants during execution and chaos.
 type InvariantChecker struct {
-	mu             sync.Mutex
-	cluster        *Cluster
-	leadersPerTerm map[uint64]string            // term -> leader nodeID
-	committed      map[uint64]raft.LogEntry     // index -> committed entry
-	applied        map[uint64]string            // index -> applied command payload
-	leaderHistory  map[string][]raft.LogEntry   // nodeID -> last observed log while leader
+	mu                   sync.Mutex
+	cluster              *Cluster
+	leadersPerTerm       map[uint64]string                   // term -> leader nodeID
+	committed            map[uint64]raft.LogEntry            // index -> committed entry
+	applied              map[uint64]string                   // index -> applied command payload
+	leaderLastIndex      map[string]uint64                   // leaderKey -> highest seen LastIndex
+	leaderEntriesHistory map[string]map[uint64]raft.LogEntry // leaderKey -> index -> LogEntry
 }
 
 // NewInvariantChecker creates a new invariant verifier.
 func NewInvariantChecker(c *Cluster) *InvariantChecker {
 	return &InvariantChecker{
-		cluster:        c,
-		leadersPerTerm: make(map[uint64]string),
-		committed:      make(map[uint64]raft.LogEntry),
-		applied:        make(map[uint64]string),
-		leaderHistory:  make(map[string][]raft.LogEntry),
+		cluster:              c,
+		leadersPerTerm:       make(map[uint64]string),
+		committed:            make(map[uint64]raft.LogEntry),
+		applied:              make(map[uint64]string),
+		leaderLastIndex:      make(map[string]uint64),
+		leaderEntriesHistory: make(map[string]map[uint64]raft.LogEntry),
 	}
 }
 
@@ -51,17 +53,22 @@ func (ic *InvariantChecker) CheckAll() error {
 		return err
 	}
 
-	// 2. Leader Append-Only
+	// 2. Leader Append-Only: Leader never overwrites or truncates its log
 	if err := ic.checkLeaderAppendOnly(); err != nil {
 		return err
 	}
 
-	// 3. Log Matching
+	// 3. Log Matching: Matching (index, term) implies identical prefixes
 	if err := ic.checkLogMatching(); err != nil {
 		return err
 	}
 
-	// 4. State Machine Safety
+	// 4. Leader Completeness: Committed entries present in all higher-term leaders
+	if err := ic.checkLeaderCompleteness(); err != nil {
+		return err
+	}
+
+	// 5. State Machine Safety: At most one command applied per log index
 	if err := ic.checkStateMachineSafety(); err != nil {
 		return err
 	}
@@ -93,10 +100,11 @@ func (ic *InvariantChecker) checkElectionSafety(states map[string]raft.NodeState
 	return nil
 }
 
-// checkLeaderAppendOnly verifies that a leader never overwrites or deletes its own entries.
+// checkLeaderAppendOnly verifies that a leader never overwrites or deletes its own entries (§5.3).
 func (ic *InvariantChecker) checkLeaderAppendOnly() error {
-	for id, n := range ic.cluster.nodes {
-		if n.IsStopped() {
+	for _, id := range ic.cluster.NodeIDs() {
+		n, ok := ic.cluster.GetNode(id)
+		if !ok || n.IsStopped() {
 			continue
 		}
 		term, isLeader, _ := n.GetState()
@@ -106,40 +114,138 @@ func (ic *InvariantChecker) checkLeaderAppendOnly() error {
 
 		st := n.GetNodeState()
 		key := fmt.Sprintf("%s-term-%d", id, term)
-		prevLen := len(ic.leaderHistory[key])
 
-		if int(st.LastIndex) < prevLen {
-			return fmt.Errorf("[INVARIANT VIOLATION] Leader Append-Only violated! Leader %s shrank log from %d to %d",
-				id, prevLen, st.LastIndex)
+		// 1. Leader logical LastIndex must be monotonic non-decreasing
+		prevLastIndex, exists := ic.leaderLastIndex[key]
+		if exists && st.LastIndex < prevLastIndex {
+			return fmt.Errorf("[INVARIANT VIOLATION] Leader Append-Only violated! Leader %s in term %d shrank LastIndex from %d to %d",
+				id, term, prevLastIndex, st.LastIndex)
+		}
+		ic.leaderLastIndex[key] = st.LastIndex
+
+		// 2. Entries previously seen for this leader must not be mutated
+		currentEntries := n.GetLogEntries()
+		if currentEntries != nil {
+			prevEntriesMap, mapExists := ic.leaderEntriesHistory[key]
+			if !mapExists {
+				prevEntriesMap = make(map[uint64]raft.LogEntry)
+				ic.leaderEntriesHistory[key] = prevEntriesMap
+			}
+			for _, e := range currentEntries {
+				if prev, found := prevEntriesMap[e.Index]; found {
+					if prev.Term != e.Term || string(prev.Data) != string(e.Data) {
+						return fmt.Errorf("[INVARIANT VIOLATION] Leader Append-Only violated! Leader %s modified existing entry at index %d",
+							id, e.Index)
+					}
+				}
+				prevEntriesMap[e.Index] = e
+			}
 		}
 	}
 	return nil
 }
 
 // checkLogMatching verifies that if two logs contain an entry with same index and term,
-// all previous entries are identical.
+// all previous entries are identical (§5.3).
 func (ic *InvariantChecker) checkLogMatching() error {
-	// Sample node states
 	nodeList := ic.cluster.NodeIDs()
+	type logMap map[uint64]raft.LogEntry
+	nodeLogs := make(map[string]logMap)
+
+	for _, id := range nodeList {
+		n, ok := ic.cluster.GetNode(id)
+		if !ok || n.IsStopped() {
+			continue
+		}
+		entries := n.GetLogEntries()
+		lm := make(logMap)
+		for _, e := range entries {
+			lm[e.Index] = e
+		}
+		nodeLogs[id] = lm
+	}
+
 	for i := 0; i < len(nodeList); i++ {
 		for j := i + 1; j < len(nodeList); j++ {
-			n1, ok1 := ic.cluster.GetNode(nodeList[i])
-			n2, ok2 := ic.cluster.GetNode(nodeList[j])
-			if !ok1 || !ok2 || n1.IsStopped() || n2.IsStopped() {
+			id1 := nodeList[i]
+			id2 := nodeList[j]
+			lm1, ok1 := nodeLogs[id1]
+			lm2, ok2 := nodeLogs[id2]
+			if !ok1 || !ok2 {
 				continue
 			}
 
-			s1 := n1.GetNodeState()
-			s2 := n2.GetNodeState()
-
-			// If both have committed up to minCommit, compare
-			minCommit := s1.CommitIndex
-			if s2.CommitIndex < minCommit {
-				minCommit = s2.CommitIndex
+			// Find matching entries
+			for idx, e1 := range lm1 {
+				e2, exists := lm2[idx]
+				if exists && e1.Term == e2.Term {
+					// All entries prior to idx must match in both logs
+					for prevIdx := uint64(1); prevIdx < idx; prevIdx++ {
+						p1, p1Exists := lm1[prevIdx]
+						p2, p2Exists := lm2[prevIdx]
+						if p1Exists && p2Exists {
+							if p1.Term != p2.Term || string(p1.Data) != string(p2.Data) {
+								return fmt.Errorf("[INVARIANT VIOLATION] Log Matching violated between %s and %s at index %d prior to match index %d",
+									id1, id2, prevIdx, idx)
+							}
+						}
+					}
+				}
 			}
+		}
+	}
+	return nil
+}
 
-			if minCommit > 0 && s1.LastTerm == s2.LastTerm && s1.LastIndex == s2.LastIndex {
-				// Consistent tail
+// checkLeaderCompleteness verifies that if an entry is committed in term T,
+// it appears in the log of all leaders of terms > T (§5.4).
+func (ic *InvariantChecker) checkLeaderCompleteness() error {
+	// 1. Collect all known committed entries from active nodes
+	for _, id := range ic.cluster.NodeIDs() {
+		n, ok := ic.cluster.GetNode(id)
+		if !ok || n.IsStopped() {
+			continue
+		}
+		st := n.GetNodeState()
+		if st.CommitIndex > 0 {
+			entries := n.GetLogEntries()
+			for _, e := range entries {
+				if e.Index <= st.CommitIndex {
+					ic.committed[e.Index] = e
+				}
+			}
+		}
+	}
+
+	// 2. Check each active leader to ensure all committed entries from earlier terms exist
+	for _, id := range ic.cluster.NodeIDs() {
+		n, ok := ic.cluster.GetNode(id)
+		if !ok || n.IsStopped() {
+			continue
+		}
+		term, isLeader, _ := n.GetState()
+		if !isLeader {
+			continue
+		}
+
+		st := n.GetNodeState()
+		leaderEntries := n.GetLogEntries()
+		leaderMap := make(map[uint64]raft.LogEntry)
+		for _, e := range leaderEntries {
+			leaderMap[e.Index] = e
+		}
+
+		for idx, committedEntry := range ic.committed {
+			if committedEntry.Term < term {
+				// If index was compacted into snapshot, it was safely committed & compacted
+				if idx <= st.LastApplied && idx < st.LastIndex-uint64(len(leaderEntries)) {
+					continue
+				}
+				entryOnLeader, found := leaderMap[idx]
+				if !found || entryOnLeader.Term != committedEntry.Term {
+					return fmt.Errorf("[INVARIANT VIOLATION] Leader Completeness violated! Leader %s in term %d missing committed entry at index %d (term %d)",
+						id, term, idx, committedEntry.Term)
+				}
 			}
 		}
 	}

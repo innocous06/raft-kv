@@ -49,18 +49,19 @@ type SnapshotData struct {
 
 // StateMachine is the replicated key-value state machine.
 type StateMachine struct {
-	mu           sync.RWMutex
-	nodeID       string
-	data         map[string]string
-	dedup        map[string]ClientRecord
-	waiters      map[uint64]chan OpResult
-	raftNode     *raft.Node
-	applyCh      <-chan raft.ApplyMsg
-	lastApplied  uint64
-	snapshotSize int // Snapshot threshold (entries count); <=0 disables auto snapshot
-	eventBus     *events.Bus
-	stopCh       chan struct{}
-	doneCh       chan struct{}
+	mu             sync.RWMutex
+	nodeID         string
+	data           map[string]string
+	dedup          map[string]ClientRecord
+	waiters        map[uint64]chan OpResult
+	appliedResults map[uint64]OpResult
+	raftNode       *raft.Node
+	applyCh        <-chan raft.ApplyMsg
+	lastApplied    uint64
+	snapshotSize   int // Snapshot threshold (entries count); <=0 disables auto snapshot
+	eventBus       *events.Bus
+	stopCh         chan struct{}
+	doneCh         chan struct{}
 }
 
 // NewStateMachine creates a new KV state machine backed by a Raft node.
@@ -70,16 +71,17 @@ func NewStateMachine(nodeID string, raftNode *raft.Node, snapshotThreshold int, 
 	}
 
 	sm := &StateMachine{
-		nodeID:       nodeID,
-		data:         make(map[string]string),
-		dedup:        make(map[string]ClientRecord),
-		waiters:      make(map[uint64]chan OpResult),
-		raftNode:     raftNode,
-		applyCh:      raftNode.ApplyCh(),
-		snapshotSize: snapshotThreshold,
-		eventBus:     bus,
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
+		nodeID:         nodeID,
+		data:           make(map[string]string),
+		dedup:          make(map[string]ClientRecord),
+		waiters:        make(map[uint64]chan OpResult),
+		appliedResults: make(map[uint64]OpResult),
+		raftNode:       raftNode,
+		applyCh:        raftNode.ApplyCh(),
+		snapshotSize:   snapshotThreshold,
+		eventBus:       bus,
+		stopCh:         make(chan struct{}),
+		doneCh:         make(chan struct{}),
 	}
 
 	go sm.applyLoop()
@@ -105,14 +107,25 @@ func (sm *StateMachine) Execute(op Op, timeout time.Duration) (OpResult, error) 
 		return OpResult{}, fmt.Errorf("%w: leader is %s", ErrNotLeader, leaderID)
 	}
 
-	waiter := make(chan OpResult, 1)
 	sm.mu.Lock()
+	// Check if already applied before we registered waiter (fast commit path)
+	if res, ok := sm.appliedResults[index]; ok {
+		delete(sm.appliedResults, index)
+		sm.mu.Unlock()
+		if res.Err != "" {
+			return res, errors.New(res.Err)
+		}
+		return res, nil
+	}
+
+	waiter := make(chan OpResult, 1)
 	sm.waiters[index] = waiter
 	sm.mu.Unlock()
 
 	defer func() {
 		sm.mu.Lock()
 		delete(sm.waiters, index)
+		delete(sm.appliedResults, index)
 		sm.mu.Unlock()
 	}()
 
@@ -218,7 +231,26 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 
 	// Check if log compaction / snapshot threshold reached
 	if sm.snapshotSize > 0 && sm.lastApplied%uint64(sm.snapshotSize) == 0 {
-		go sm.takeSnapshot(sm.lastApplied)
+		// Synchronously clone state under sm.mu.Lock() to guarantee point-in-time consistency
+		snapIndex := sm.lastApplied
+		snap := SnapshotData{
+			Data:  make(map[string]string, len(sm.data)),
+			Dedup: make(map[string]ClientRecord, len(sm.dedup)),
+		}
+		for k, v := range sm.data {
+			snap.Data[k] = v
+		}
+		for k, v := range sm.dedup {
+			snap.Dedup[k] = v
+		}
+
+		go func(idx uint64, s SnapshotData) {
+			bytes, err := json.Marshal(s)
+			if err != nil {
+				return
+			}
+			_ = sm.raftNode.Snapshot(idx, bytes)
+		}(snapIndex, snap)
 	}
 }
 
@@ -228,29 +260,17 @@ func (sm *StateMachine) notifyWaiter(index uint64, result OpResult) {
 		case ch <- result:
 		default:
 		}
+	} else {
+		// Waiter not registered yet (fast commit); cache result so Execute can pick it up
+		sm.appliedResults[index] = result
+		if len(sm.appliedResults) > 500 {
+			for k := range sm.appliedResults {
+				if k < index-100 {
+					delete(sm.appliedResults, k)
+				}
+			}
+		}
 	}
-}
-
-func (sm *StateMachine) takeSnapshot(index uint64) {
-	sm.mu.RLock()
-	snap := SnapshotData{
-		Data:  make(map[string]string, len(sm.data)),
-		Dedup: make(map[string]ClientRecord, len(sm.dedup)),
-	}
-	for k, v := range sm.data {
-		snap.Data[k] = v
-	}
-	for k, v := range sm.dedup {
-		snap.Dedup[k] = v
-	}
-	sm.mu.RUnlock()
-
-	bytes, err := json.Marshal(snap)
-	if err != nil {
-		return
-	}
-
-	_ = sm.raftNode.Snapshot(index, bytes)
 }
 
 func (sm *StateMachine) installSnapshot(snapData []byte, index uint64) {
