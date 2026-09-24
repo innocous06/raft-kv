@@ -47,7 +47,22 @@ func NewDiskStorage(dir string) (*DiskStorage, error) {
 	}, nil
 }
 
+// syncDir flushes directory metadata changes to disk across platforms where supported.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	_ = d.Sync()
+	return nil
+}
+
 // SaveState atomically saves currentTerm, votedFor, and rewritten log entries with CRC32 checksums.
+// Note on durability and ordering:
+// Metadata and WAL files are each fsynced and replaced atomically via rename.
+// The sequence updates metadata first (currentTerm/votedFor), then the WAL, and fsyncs the parent directory.
+// The two files are replaced sequentially; the pair is not jointly atomic across power loss.
 func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.LogEntry) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -119,6 +134,7 @@ func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.Log
 	if err := os.Rename(tmpWAL, d.walFile); err != nil {
 		return fmt.Errorf("failed to rename wal: %w", err)
 	}
+	_ = syncDir(d.dir)
 
 	return nil
 }
@@ -246,7 +262,11 @@ func (d *DiskStorage) SaveSnapshot(snapshot []byte, lastIncludedIndex uint64, la
 	}
 	_ = f.Close()
 
-	return os.Rename(tmpSnap, d.snapFile)
+	if err := os.Rename(tmpSnap, d.snapFile); err != nil {
+		return err
+	}
+	_ = syncDir(d.dir)
+	return nil
 }
 
 // LoadSnapshot restores the latest snapshot if present.
