@@ -69,7 +69,9 @@ func (n *Node) processSnapshot(msg snapshotMsg) error {
 		}
 	}
 
-	n.persist()
+	if err := n.persist(); err != nil {
+		return fmt.Errorf("failed to persist state after snapshot compaction: %w", err)
+	}
 	n.events.Emit(n.id, events.SnapshotSaved, n.role.String(), n.currentTerm,
 		fmt.Sprintf("Snapshot created at index=%d term=%d", msg.index, term), nil)
 	return nil

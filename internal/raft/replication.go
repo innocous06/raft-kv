@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -24,6 +25,10 @@ func (n *Node) broadcastAppendEntries() {
 
 		prevTerm, err := n.log.Term(prevIndex)
 		if err != nil {
+			if errors.Is(err, ErrIndexCompacted) {
+				n.sendInstallSnapshot(peer)
+				continue
+			}
 			prevTerm = 0
 		}
 
@@ -127,7 +132,14 @@ func (n *Node) sendAppendEntriesToPeer(peer string) {
 		return
 	}
 
-	prevTerm, _ := n.log.Term(prevIndex)
+	prevTerm, err := n.log.Term(prevIndex)
+	if err != nil {
+		if errors.Is(err, ErrIndexCompacted) {
+			n.sendInstallSnapshot(peer)
+			return
+		}
+		prevTerm = 0
+	}
 	entries, _ := n.log.EntriesFrom(n.nextIndex[peer])
 
 	req := &AppendEntriesRequest{
@@ -201,11 +213,12 @@ func (n *Node) checkAndAdvanceCommitIndex() {
 func (n *Node) applyEntries() {
 	var msgs []ApplyMsg
 	for n.commitIndex > n.lastApplied {
-		n.lastApplied++
-		entry, err := n.log.Entry(n.lastApplied)
+		targetIndex := n.lastApplied + 1
+		entry, err := n.log.Entry(targetIndex)
 		if err != nil {
-			continue
+			break
 		}
+		n.lastApplied = targetIndex
 
 		msg := ApplyMsg{
 			CommandValid: true,
@@ -334,7 +347,12 @@ func (n *Node) processAppendEntries(req *AppendEntriesRequest) *AppendEntriesRes
 	}
 
 	if len(req.Entries) > 0 {
-		n.persist()
+		if err := n.persist(); err != nil {
+			return &AppendEntriesResponse{
+				Term:    n.currentTerm,
+				Success: false,
+			}
+		}
 	}
 
 	// Rule 5: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry) (§5.3)
