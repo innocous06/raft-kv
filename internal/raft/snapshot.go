@@ -183,13 +183,22 @@ func (n *Node) processInstallSnapshot(req *InstallSnapshotRequest) *InstallSnaps
 		return &InstallSnapshotResponse{Term: n.currentTerm}
 	}
 
-	// Compact local log
-	_ = n.log.Compact(req.LastIncludedIndex, req.LastIncludedTerm)
-
+	// Save snapshot to durable storage first before compacting in-memory log
 	if n.storage != nil {
-		_ = n.storage.SaveSnapshot(req.Data, req.LastIncludedIndex, req.LastIncludedTerm)
+		if err := n.storage.SaveSnapshot(req.Data, req.LastIncludedIndex, req.LastIncludedTerm); err != nil {
+			return &InstallSnapshotResponse{Term: n.currentTerm}
+		}
 	}
-	n.persist()
+
+	if err := n.log.Compact(req.LastIncludedIndex, req.LastIncludedTerm); err != nil {
+		return &InstallSnapshotResponse{Term: n.currentTerm}
+	}
+
+	if err := n.persist(); err != nil {
+		n.events.Emit(n.id, events.StorageFatal, n.role.String(), n.currentTerm, "persist failure during install snapshot", err)
+		go n.Stop()
+		return &InstallSnapshotResponse{Term: n.currentTerm}
+	}
 
 	if req.LastIncludedIndex > n.commitIndex {
 		n.commitIndex = req.LastIncludedIndex

@@ -342,7 +342,8 @@ func (n *Node) processAppendEntries(req *AppendEntriesRequest) *AppendEntriesRes
 		if entry.Index <= n.log.LastIndex() {
 			existingTerm, err := n.log.Term(entry.Index)
 			if err == nil && existingTerm != entry.Term {
-				// Delete existing entry and all following
+				// Delete existing entry and all following. Truncate error is safe to ignore
+				// because entry.Index is bounded by LastIndex and verified against LastIncludedIndex.
 				_ = n.log.Truncate(entry.Index)
 				n.log.Append(req.Entries[i:]...)
 				break

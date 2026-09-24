@@ -364,6 +364,8 @@ func (n *Node) handlePropose(p proposeMsg) {
 
 	n.log.Append(entry)
 	if err := n.persist(); err != nil {
+		// Roll back the unpersisted client entry. Truncate error is safe to ignore
+		// because newIndex is guaranteed to be within the uncompacted log tail.
 		_ = n.log.Truncate(newIndex)
 		p.replyCh <- proposeResult{isLeader: false}
 		return
