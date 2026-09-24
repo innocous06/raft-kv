@@ -47,7 +47,13 @@ func NewDiskStorage(dir string) (*DiskStorage, error) {
 	}, nil
 }
 
-// syncDir flushes directory metadata changes to disk across platforms where supported.
+// syncDir attempts to flush directory metadata changes to disk.
+// Note on OS differences:
+// On POSIX file systems (ext4, xfs, etc.), fsync on a directory file descriptor
+// guarantees directory entry durability after rename.
+// On Windows, directory handles cannot be flushed via standard user-mode sync
+// (FlushFileBuffers fails on directory handles), so directory fsync is best-effort
+// and a no-op on Windows.
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
@@ -61,7 +67,8 @@ func syncDir(dir string) error {
 // SaveState atomically saves currentTerm, votedFor, and rewritten log entries with CRC32 checksums.
 // Note on durability and ordering:
 // Metadata and WAL files are each fsynced and replaced atomically via rename.
-// The sequence updates metadata first (currentTerm/votedFor), then the WAL, and fsyncs the parent directory.
+// The sequence updates metadata first (currentTerm/votedFor), fsyncs the parent directory,
+// then the WAL, and fsyncs the parent directory again.
 // The two files are replaced sequentially; the pair is not jointly atomic across power loss.
 func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.LogEntry) error {
 	d.mu.Lock()
@@ -94,6 +101,7 @@ func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.Log
 	if err := os.Rename(tmpMeta, d.metaFile); err != nil {
 		return fmt.Errorf("failed to rename metadata: %w", err)
 	}
+	_ = syncDir(d.dir)
 
 	tmpWAL := d.walFile + ".tmp"
 	f, err := os.OpenFile(tmpWAL, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
