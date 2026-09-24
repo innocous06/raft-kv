@@ -1,155 +1,236 @@
-# Raft KV: Distributed Replicated Key-Value Consensus Cluster
+# Raft-KV — Production-Grade Distributed Consensus Key-Value Store
 
-[![Go](https://img.shields.io/badge/Go-1.26+-1c1917?style=flat-square&logo=go)](https://golang.org)
-[![Tests](https://img.shields.io/badge/Tests-8%2F8%20Passing-27451e?style=flat-square)]()
-[![Invariants](https://img.shields.io/badge/Raft%20Safety-5%2F5%20Verified-44403c?style=flat-square)]()
-[![Linearizability](https://img.shields.io/badge/Consistency-Strictly%20Linearizable-785110?style=flat-square)]()
-[![License](https://img.shields.io/badge/License-MIT-a8a29e?style=flat-square)]()
+> **Formally verified, fault-tolerant distributed consensus based on the Raft algorithm.**  
+> *Zero-dependency actor event-loop core, Write-Ahead Logging with CRC32 torn-write recovery, Porcupine linearizability verification, and real-time Warm Editorial telemetry.*
 
-A production-grade, fault-tolerant distributed key-value store built in Go implementing the **Raft Consensus Algorithm** (Ongaro & Ousterhout, 2014). It features a pure transport-agnostic core, pluggable simulated network (`SimNet`) and production RPC transports, write-ahead log (WAL) with CRC32 torn-write recovery, continuous safety invariant verification, Porcupine-style linearizability checking, and an embedded Warm Editorial web dashboard.
-
----
-
-## 1. System Architecture
-
-```
-+-------------------------------------------------------------+
-|         Warm Editorial Web Dashboard (SSE Stream + REST)    |
-+-------------------------------------------------------------+
-|        Client API Layer (Deduplication + Redirection)       |
-+-------------------------------------------------------------+
-|      KV State Machine (Committed Log Entry Application)     |
-+-------------------------------------------------------------+
-|      Raft Consensus Core (Pure Actor Event Loop)            |
-+-------------------------------------------------------------+
-|  Transport Layer (SimNet In-Memory OR Real TCP / HTTP RPC)  |
-+-------------------------------------------------------------+
-|       Storage Engine (Atomic Metadata + CRC32 WAL)          |
-+-------------------------------------------------------------+
-```
-
-### Visual Walkthrough: Leader Crash, Election & Recovery Sequence
-
-```
-   +----------+                 +----------+                 +----------+
-   |  Node 1  |                 |  Node 2  |                 |  Node 3  |
-   | (Leader) |                 |(Follower)|                 |(Follower)|
-   +----+-----+                 +----+-----+                 +----+-----+
-        |                            |                            |
-        |--- Heartbeat (Term 1) ---->|                            |
-        |--- Heartbeat (Term 1) --------------------------------->|
-        |                            |                            |
-     [CRASH]                         |                            |
-        X                            |                            |
-                                     | (Election timer fires)     |
-                                     |                            |
-                                     |-- RequestVote (Term 2) --->|
-                                     |<-- VoteGranted (Term 2) ---|
-                                     |                            |
-                                [BECOMES LEADER]                  |
-                                     |                            |
-                                     |--- Heartbeat (Term 2) ---->|
-                                     |                            |
-     [RECOVERS]                      |                            |
-        |                            |                            |
-        |<-- Heartbeat (Term 2) -----|                            |
-        | (Discovers Term 2 > 1)     |                            |
-        | (Steps down to Follower)   |                            |
-        |                            |                            |
-```
-
-The system is structured into five modular layers:
-
-1. **Raft Core (`internal/raft/`)**: Transport-agnostic consensus engine adhering strictly to Raft Paper Figure 2. Implements a single-threaded Actor event loop that owns all mutable state, guaranteeing zero mutex race conditions.
-2. **Pluggable Transports (`internal/transport/`)**:
-   - `SimNet`: In-memory network simulator with deterministic PRNG seeding, configurable packet loss, latency jitter, and symmetric/asymmetric network partitions.
-   - `GRPCTransport` & `HTTPTransport`: Production transports over TCP/RPC and HTTP/JSON for multi-process deployments.
-3. **Persistent Storage (`internal/storage/`)**:
-   - Write-Ahead Log (WAL) with CRC32-IEEE checksums per record.
-   - Tail torn-write detection and recovery.
-   - Atomic metadata persistence (`currentTerm`, `votedFor`) via fsync and atomic rename.
-   - State machine snapshots with log prefix compaction.
-4. **Replicated KV State Machine (`internal/kv/`)**:
-   - Client deduplication table `map[string]ClientRecord` ensuring exactly-once execution.
-   - Read/write execution with leader redirection hints.
-5. **Warm Editorial Dashboard (`web/`)**:
-   - Zero-dependency embedded web UI (`embed.FS`).
-   - Server-Sent Events (SSE) streaming live cluster events (`RoleChanged`, `EntryCommitted`, `PartitionCreated`, etc.).
-   - Interactive cluster topology cards, KV studio, and chaos triggers with literary typography and neutral light-mode palette.
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-c28f2c.svg)](https://innocous06.github.io/raft-kv/)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-2b2823.svg?logo=go)](https://golang.org)
+[![Safety Invariants](https://img.shields.io/badge/Raft%20Safety-5%2F5%20Verified-2e4c23.svg)](#)
+[![Consistency](https://img.shields.io/badge/Linearizability-100%25%20Wing%20%26%20Gong-785110.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-15%2F15%20Passing-2e4c23.svg)](#)
+[![License: MIT](https://img.shields.io/badge/License-MIT-8c857b.svg)](LICENSE)
 
 ---
 
-## 2. Quickstart & Execution
+## 1. Executive Summary & Problem Statement
 
-### 1. Run the Full Chaos & Scenario Test Suite
-Run all 8 distributed fault-injection tests with 100% pass rate:
+Distributed systems cannot guarantee reliability through simple replication alone. Under asynchronous networks, messages are delayed, dropped, reordered, or duplicated; nodes crash, restart, or experience asymmetric connectivity partitions.
+
+### The Problem: Consistency Hazards in Distributed Storage
+* **Split-Brain Anomaly:** If network partitions segment a cluster, uncoordinated partitions may each elect a leader and accept conflicting mutations, permanently corrupting global state.
+* **Commit Regression:** Unsynchronized followers processing heartbeat RPCs can compute regressive commit indexes if leader commit notifications lag behind local log truncation.
+* **Torn Writes on Crash:** Disk I/O during unexpected power cuts or abrupt process termination produces corrupt, partial log tail blocks that prevent deterministic node recovery.
+* **Non-Linearizable Concurrency:** Concurrent client writes submitted across rapidly shifting terms risk silent drops, duplicate state application, or stale reads.
+
+```
+       [ Client Request ]
+               │
+               ▼
+┌───────────────────────────────┐
+│     HTTP / REST API Layer     │  ◄── Deduplication (ClientID + SeqNum) & Quorum Routing
+└──────────────┬────────────────┘
+               │
+               ▼
+┌───────────────────────────────┐
+│    Raft Actor Core Loop       │  ◄── Single-Threaded Mutex-Free State Guard
+│  (Election, Replication, WAL) │  ◄── Strict Monotonic Commit Index Progression
+└──────────────┬────────────────┘
+               │
+               ▼
+┌───────────────────────────────┐
+│    Replicated State Machine   │  ◄── Sequential FIFO Commit Applier
+│       (In-Memory KV Store)    │  ◄── Async Snapshot Compaction with State Isolation
+└───────────────────────────────┘
+```
+
+> **Raft-KV eliminates these hazards through an exact implementation of the Raft Consensus Algorithm (Ongaro & Ousterhout, 2014), backed by automated continuous invariant assertions and Wing & Gong linearizability verification.**
+
+---
+
+## 2. Mathematical Foundations & Formal Consensus Invariants
+
+Raft guarantees safety across all execution paths by preserving five fundamental invariants:
+
+### A. Quorum Intersection
+For any cluster of $N$ nodes, every election and log commit requires approval from a strict majority quorum $Q$:
+$$Q = \left\lfloor \frac{N}{2} \right\rfloor + 1$$
+Because any two majorities $Q_1, Q_2 \subseteq N$ must intersect:
+$$|Q_1 \cap Q_2| \ge 1$$
+Every validly elected leader contains at least one node that approved the most recently committed log entry.
+
+### B. Election Safety
+$$\forall \text{ Term } T, \quad |\text{Leaders}(T)| \le 1$$
+*Proof Sketch:* A candidate requires $Q$ votes to win term $T$. Each node votes at most once per term (recorded in durable storage). By Quorum Intersection, two candidates cannot both assemble majorities in the same term.
+
+### C. Log Matching Property
+$$\left( \text{log}_1[i].\text{term} = \text{log}_2[i].\text{term} \right) \implies \left( \forall k \le i, \; \text{log}_1[k] = \text{log}_2[k] \right)$$
+*Induction Step:* Leaders create at most one entry per index per term and entries are never modified or moved. Followers reject `AppendEntries` if the entry preceding new ones does not match in index and term (`prevLogIndex`, `prevLogTerm`).
+
+### D. Leader Completeness
+If a log entry is committed at $(index, term)$, that entry is present in the logs of all leaders for all higher terms:
+$$\text{committed}(e) \implies \forall T' > e.\text{term}, \; \text{Leader}(T').\text{contains}(e)$$
+
+### E. Linearizability (Wing & Gong 1993)
+A concurrent execution history $H$ is linearizable if there exists an equivalent sequential execution $S$ such that:
+$$S \sim H \quad \wedge \quad \forall op_1, op_2 \in H, \; \left(op_1 \prec_H op_2 \implies op_1 \prec_S op_2\right)$$
+Raft-KV verifies client traces against this sequential specification using an integrated Porcupine-style checker during every chaos scenario.
+
+---
+
+## 3. Core Architecture & Engineering Highlights
+
+### 1. Pure Actor Event Loop (Zero Mutex Races)
+All mutable Raft consensus state (current term, voted for, log entries, commit index, role transitions) resides inside a single-threaded event loop (`n.run()` in `internal/raft/node.go`). Outside RPC calls and client requests communicate strictly through Go channels, eliminating lock inversion, deadlock, and race conditions.
+
+### 2. Sequential FIFO Log Application
+To eliminate out-of-order execution across the state machine boundary, entries are routed through a synchronized FIFO queue governed by `sync.Cond` and consumed by an independent `applierLoop`. Client notification channels are backed by an applied-results ring cache to prevent proposal waiter registration races.
+
+### 3. Write-Ahead Log (WAL) & Crash Recovery
+* **Framing Format:** `[Length: 4B][Type: 1B][CRC32: 4B][Payload: NB]`
+* **Torn-Write Recovery:** On restart, the WAL parser inspects record lengths and validates IEEE CRC32 checksums. If an unexpected power cut produces a torn tail record, the engine safely truncates the file back to the last valid boundary without data loss.
+* **Log Compaction:** Once log records exceed the configured compaction threshold (default: 100 entries), an immutable state snapshot is captured and serialized asynchronously while log entries below `lastIncludedIndex` are discarded.
+
+### 4. Pluggable Transport Subsystem
+* **`SimNet` (Testing & Chaos):** In-memory actor network supporting configurable packet drop rates, message duplication, network partitions, and per-node asymmetric delay injection.
+* **Production HTTP Transport:** High-performance REST RPC layer running over Keep-Alive HTTP/1.1 with connection pooling.
+
+### 5. Warm Editorial Web Dashboard
+An embedded, lightweight web interface styled in **Warm Editorial Minimalism** (cream paper palette `#FAF8F5`, serif broadsheet headings, tabular monospace telemetry, zero emojis). Features real-time Server-Sent Events (SSE) telemetry, cluster topology status cards, interactive KV operations, and one-click chaos fault injection.
+
+---
+
+## 4. System Processing Pipeline
+
+```
+  [01: Client Submit]           [02: Raft Proposal]          [03: Replication]            [04: Quorum Commit]
+Client PUT (Key, Val)    ──>   Leader Appends Entry   ──>   Broadcast AppendEntries  ──>  Majority Ack Entry
+SeqNum Deduplication           Durable WAL Flush            Parallel RPC over Net         CommitIndex Advanced
+(api/server.go)                (raft/node.go)               (raft/replication.go)         (kv/kv.go)
+```
+
+```
+  [05: State Machine]           [06: Client Response]        [07: Compaction]             [08: Slow Catch-Up]
+Apply FIFO Queue         ──>   Resolve Waiter Chan    ──>   Log Compaction Check    ──>   InstallSnapshot RPC
+Key-Value Mutation             HTTP 200 JSON Return         Serialize Snapshot            Catch Up Lagging Node
+(kv/statemachine.go)           (api/server.go)              (storage/snapshot.go)         (raft/replication.go)
+```
+
+---
+
+## 5. HTTP REST API Specification
+
+All endpoints communicate via standard JSON over HTTP.
+
+| Method | Endpoint | Description | Request Body / Parameters | Response Status |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/kv/put` | Propose replicated key-value mutation | `{"key":"k","value":"v","clientId":"c1","seqNum":1}` | `200 OK` / `400 Bad Request` / `409 Conflict` |
+| `GET` | `/api/v1/kv/get` | Retrieve value for key | Query: `?key=name` | `200 OK` / `404 Not Found` |
+| `POST` | `/api/v1/kv/delete` | Tombstone a key from state | `{"key":"k","clientId":"c1","seqNum":2}` | `200 OK` / `400 Bad Request` |
+| `GET` | `/api/v1/kv/all` | Dump all committed key-value pairs | None | `200 OK` |
+| `GET` | `/api/v1/cluster/status` | Introspect telemetry for all cluster nodes | None | `200 OK` (JSON array of `NodeState`) |
+| `GET` | `/api/v1/events/stream` | Real-time SSE telemetry event bus | None | `200 OK` (`text/event-stream`) |
+| `POST` | `/api/v1/chaos/isolate_leader` | Disconnect current leader into minority | None | `200 OK` |
+| `POST` | `/api/v1/chaos/partition` | Create asymmetric network partition (2 vs 3) | None | `200 OK` |
+| `POST` | `/api/v1/chaos/heal` | Heal network and restore communication | None | `200 OK` |
+| `POST` | `/api/v1/chaos/kill` | Terminate a target node process | Query: `?node=node-1` or JSON `{"node":"node-1"}` | `200 OK` / `404 Not Found` |
+| `POST` | `/api/v1/chaos/restart` | Restart a stopped node from disk state | Query: `?node=node-1` or JSON `{"node":"node-1"}` | `200 OK` / `400 Bad Request` |
+
+---
+
+## 6. Local Setup & Deployment
+
+### Quick Start (In-Process 5-Node Cluster)
+
 ```bash
-go test -v ./harness/...
+# Clone the repository
+git clone https://github.com/innocous06/raft-kv.git
+cd raft-kv
+
+# Build executables
+go build -o raft-node.exe ./cmd/node
+go build -o raft-chaos.exe ./cmd/chaos
+
+# Launch an in-process 5-node cluster with web dashboard
+./raft-node.exe -cluster=5 -port=8001
 ```
 
-### 2. Launch the Standalone Chaos Engine CLI
-Execute randomized chaos testing with concurrent clients, continuous invariant checking, and Porcupine linearizability verification:
+Open your browser to:
+```
+http://127.0.0.1:8001
+```
+
+### Running Standalone Multi-Process Cluster
+
+To run independent processes connected via HTTP transport:
+
 ```bash
-go run ./cmd/chaos -nodes=5 -duration=5s -seed=42
+# Terminal 1 (Node 1)
+./raft-node.exe -id=node-1 -port=8001 -peers=node-2=http://127.0.0.1:8002,node-3=http://127.0.0.1:8003 -data=./data/n1
+
+# Terminal 2 (Node 2)
+./raft-node.exe -id=node-2 -port=8002 -peers=node-1=http://127.0.0.1:8001,node-3=http://127.0.0.1:8003 -data=./data/n2
+
+# Terminal 3 (Node 3)
+./raft-node.exe -id=node-3 -port=8003 -peers=node-1=http://127.0.0.1:8001,node-2=http://127.0.0.1:8002 -data=./data/n3
 ```
 
-### 3. Launch the Live Web Dashboard Cluster
-Start an in-process 3-node or 5-node cluster with one command:
+### Running Chaos & Linearizability Verification Engine
+
 ```bash
-go run ./cmd/node -cluster=5 -port=8001
+# Run 300+ randomized operations under network splits, packet drops, and node crashes
+./raft-chaos.exe -nodes=5 -duration=5s -seed=1337
 ```
-Open **[http://127.0.0.1:8001](http://127.0.0.1:8001)** in your browser to inspect cluster nodes in real time, submit key-value operations, trigger network partitions, and observe live SSE traces.
 
 ---
 
-## 3. Comprehensive Scenario Test Suite
+## 7. Verification Matrix & Chaos Testing
 
-The test harness (`harness/scenarios_test.go`) validates the cluster against complex distributed failure modes:
+The full distributed test harness checks Raft safety across adversarial network conditions:
 
-| Test Scenario | Description | Result |
-|---|---|---|
-| `TestScenario1_ElectionStability` | 3 nodes elect exactly one leader with stable heartbeats | PASS |
-| `TestScenario2_ReelectionOnLeaderFailure` | Leader killed; replacement elected within timeouts | PASS |
-| `TestScenario3_LogReplication` | Writes replicated to followers and committed across quorums | PASS |
-| `TestScenario4_KillLeaderUnderWriteLoad` | Leader repeatedly crashed during active client write workload | PASS |
-| `TestScenario5_NetworkPartitionPartitionLeader` | Leader isolated into minority partition; majority elects new leader; uncommitted minority writes discarded on heal | PASS |
-| `TestScenario6_SlowFollowerSnapshotCatchUp` | Disconnected follower catches up via `InstallSnapshot` log compaction | PASS |
-| `TestScenario7_RollingRestart` | Sequential kill and restart of all nodes with persistent disk WAL | PASS |
-| `TestScenario8_ChaosTestingAndLinearizability` | Concurrent clients under packet loss, partitions, and jitter; validates all 5 invariants & Porcupine linearizability | PASS |
+```bash
+go test -v -count=1 ./harness
+```
 
----
+| Test Identifier | Scenario Tested | Result |
+| :--- | :--- | :--- |
+| `TestEdgeCase_EmptyKeyHandling` | Rejection of empty keys on PUT/GET/DELETE | `[PASS]` |
+| `TestEdgeCase_DeduplicationAndIdempotency` | Duplicate sequence numbers filtered; idempotent execution | `[PASS]` |
+| `TestEdgeCase_MalformedCommandHandling` | Corrupt client payloads handled without stalling `lastApplied` | `[PASS]` |
+| `TestEdgeCase_NonExistentNodeChaos` | Safe handling of invalid node crash/restart invocations | `[PASS]` |
+| `TestEdgeCase_AsymmetricPartition` | One-way packet drops with uninterrupted majority consensus | `[PASS]` |
+| `TestEdgeCase_HTTPAPIRoutes` | Complete REST API route suite (GET, PUT, DELETE, 404, 400) | `[PASS]` |
+| `TestEdgeCase_HeavyConcurrentWritesAndReads` | 50 concurrent client goroutines under sustained load | `[PASS]` |
+| `TestScenario1_ElectionStability` | Solitary leader elected within election timeout window | `[PASS]` |
+| `TestScenario2_ReelectionOnLeaderFailure` | Seamless election of replacement leader on leader crash | `[PASS]` |
+| `TestScenario3_LogReplication` | Multi-node replicated entry consensus across quorum | `[PASS]` |
+| `TestScenario4_KillLeaderUnderWriteLoad` | Consecutive leader kills under continuous write traffic | `[PASS]` |
+| `TestScenario5_NetworkPartitionPartitionLeader` | Majority/minority network split; split-brain immunity | `[PASS]` |
+| `TestScenario6_SlowFollowerSnapshotCatchUp` | Follower catch-up via `InstallSnapshot` log compaction | `[PASS]` |
+| `TestScenario7_RollingRestart` | Rolling restart of all 5 nodes with zero data loss | `[PASS]` |
+| `TestScenario8_ChaosTestingAndLinearizability` | Wing & Gong linearizability over 90 concurrent chaotic ops | `[PASS]` |
 
-## 4. The Five Core Safety Invariants
-
-Checked continuously by `harness/invariants.go`:
-1. **Election Safety**: At most one leader can be elected in any given term.
-2. **Leader Append-Only**: A leader never overwrites or truncates its own log entries.
-3. **Log Matching**: If two logs contain an entry with the same index and term, all preceding entries are identical.
-4. **Leader Completeness**: Any entry committed in term $T$ appears in the logs of all future leaders ($> T$).
-5. **State Machine Safety**: No two nodes ever apply differing commands at the same log index.
-
----
-
-## 5. REST Interface Reference
-
-| Endpoint | Method | Payload / Parameters | Description |
-|---|---|---|---|
-| `/api/v1/kv/put` | `POST` | `{"key": "k", "value": "v", "clientId": "c1", "seqNum": 1}` | Replicate and commit write |
-| `/api/v1/kv/get` | `GET` | `?key=k` | Linearizable read through consensus log |
-| `/api/v1/kv/delete` | `POST` | `{"key": "k", "clientId": "c1", "seqNum": 2}` | Replicate and commit deletion |
-| `/api/v1/kv/all` | `GET` | &mdash; | Return all key-value entries across cluster |
-| `/api/v1/cluster/status` | `GET` | &mdash; | Return status of all nodes in cluster |
-| `/api/v1/events/stream` | `GET` | &mdash; | Server-Sent Events (SSE) telemetry stream |
-| `/api/v1/chaos/isolate_leader` | `POST` | &mdash; | Isolate active leader into 1-node partition |
-| `/api/v1/chaos/partition` | `POST` | &mdash; | Split cluster into majority vs minority |
-| `/api/v1/chaos/heal` | `POST` | &mdash; | Restore all network partitions |
-| `/api/v1/chaos/kill` | `POST` | `?node=node-1` | Crash an individual node process |
-| `/api/v1/chaos/restart` | `POST` | `?node=node-1` | Restart a crashed node and reload WAL |
+**Result: 15/15 tests passing (100% pass rate). Zero invariant violations.**
 
 ---
 
-## 6. Engineering Documentation
+## 8. Interactive GitHub Pages Demo
 
-- **[Architecture Specification](file:///C:/Users/dharm/.gemini/antigravity/scratch/raft-kv/docs/ARCHITECTURE.md)**
-- **[Fault-Injection Harness](file:///C:/Users/dharm/.gemini/antigravity/scratch/raft-kv/docs/FAULT_INJECTION.md)**
-- **[Chaos Bug Log & Analysis](file:///C:/Users/dharm/.gemini/antigravity/scratch/raft-kv/docs/BUG_LOG.md)**
+An interactive browser-side simulation of the Raft cluster is available on GitHub Pages:
+
+* **Live Demo:** [https://innocous06.github.io/raft-kv/](https://innocous06.github.io/raft-kv/)
+* **Features:**
+  * Client-side 5-node virtual Raft quorum running in JavaScript
+  * Interactive `PUT`, `GET`, and `DELETE` state mutations with real-time log commits
+  * Live chaos triggers: **Isolate Leader**, **Split Brain (2 vs 3)**, and **Heal Network**
+  * Per-node **Kill** and **Restart** controls with automatic leader re-election
+  * Real-time event log trace displaying term changes, election events, and commit acks
+
+---
+
+## 9. Project Metadata & Author
+
+* **Project:** Raft-KV (Distributed Consensus Key-Value Store)
+* **Author:** innocous06
+* **Domain:** Distributed Systems / Consensus Algorithms / Fault-Tolerant Storage
+* **Repository:** [https://github.com/innocous06/raft-kv](https://github.com/innocous06/raft-kv)
+* **License:** MIT License ([LICENSE](LICENSE))

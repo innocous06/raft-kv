@@ -266,13 +266,7 @@ func runInProcessCluster(n int, port int) {
 	// Mount Dashboard UI
 	staticFS := http.StripPrefix("/static/", web.Handler())
 	mux.Handle("/static/", staticFS)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		web.Handler().ServeHTTP(w, r)
-	})
+	mux.Handle("/", web.Handler())
 
 	addr := fmt.Sprintf(":%d", port)
 	server := &http.Server{Addr: addr, Handler: mux}
@@ -341,13 +335,7 @@ func runSingleNode(nodeID string, port int, peersFlag, dataDir string) {
 
 	staticFS := http.StripPrefix("/static/", web.Handler())
 	mux.Handle("/static/", staticFS)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		web.Handler().ServeHTTP(w, r)
-	})
+	mux.Handle("/", web.Handler())
 
 	node.Start()
 	defer node.Stop()
