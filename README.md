@@ -166,7 +166,7 @@ The test suite runs with zero external dependencies via `go test`:
 go test -v -count=1 ./harness
 ```
 
-### Test Suite Results (24 / 24 Passing)
+### Test Suite Results (25 / 25 Passing)
 
 | Test Identifier | Category | Scenario & Invariants Checked | Duration |
 | :--- | :--- | :--- | :--- |
@@ -185,6 +185,7 @@ go test -v -count=1 ./harness
 | `TestEdgeCase_AsymmetricPartition` | Network Fault | One-way link drops resolved without split brain or invariant violation | 1.10s |
 | `TestEdgeCase_HTTPAPIRoutes` | HTTP Protocol | Complete route suite testing methods, 404s, and malformed bodies | 0.19s |
 | `TestEdgeCase_HeavyConcurrentWritesAndReads` | Concurrency | 200 concurrent read/write ops across 8 workers; thread safety confirmed | 0.14s |
+| `TestEdgeCase_StorageFailureProtection` | Storage Failure | Vote grant refusal, append refusal, and immediate crash-stop on I/O error | 0.10s |
 | `TestGrill_MassivePayloadStress` | Stress | Replicating and snapshotting 286 KB payloads; byte-level matching | 0.18s |
 | `TestGrill_CorruptWALRecovery` | Crash Recovery | Truncating torn 3-byte headers, corrupt CRC entries, and 4 GB claimed lengths | 0.02s |
 | `TestGrill_HTTPRouteBoundaryAndOversizedRejection` | Boundary | 5 MB body rejection (`http.MaxBytesReader`), whitespace keys, method checks | 0.69s |
@@ -194,7 +195,7 @@ go test -v -count=1 ./harness
 | `TestChaos_MultiSeedFuzzing` | Multi-Seed | 30 deterministic seeds with artificial delays and invariant verification | 6.13s |
 | `TestChaos_1000SeededRuns` | Scale Chaos | 1,000 parallel randomized chaos runs under randomized delays and churn | 6.57s |
 
-**Result:** Passes 1,000 randomized chaos runs with 0 safety invariant violations under real timers and wall-clock RNG.
+**Result:** Passes 1,000 randomized chaos runs with 0 safety invariant violations under real timers and wall-clock RNG. Full disk failure semantics and recovery guarantees are detailed in the [Storage Failure Matrix](docs/CONSENSUS_SPEC.md#6-storage-failure-matrix-what-happens-if-the-disk-fails).
 
 ---
 
