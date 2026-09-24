@@ -196,7 +196,16 @@ func (ic *InvariantChecker) checkLogMatching() error {
 // checkLeaderCompleteness verifies that if an entry is committed in term T,
 // it appears in the log of all leaders of terms > T (§5.4).
 func (ic *InvariantChecker) checkLeaderCompleteness() error {
-	// 1. Collect all known committed entries from active nodes
+	// 1. Collect all known committed entries from event bus history (captures exact commit moment)
+	for _, ev := range ic.cluster.EventBus().History() {
+		if ev.Type == events.EntryCommitted {
+			if entry, ok := ev.Data.(raft.LogEntry); ok {
+				ic.committed[entry.Index] = entry
+			}
+		}
+	}
+
+	// Also poll active node states
 	for _, id := range ic.cluster.NodeIDs() {
 		n, ok := ic.cluster.GetNode(id)
 		if !ok || n.IsStopped() {

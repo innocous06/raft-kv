@@ -253,9 +253,15 @@ func (sm *StateMachine) checkSnapshotThreshold() {
 		go func(idx uint64, s SnapshotData) {
 			bytes, err := json.Marshal(s)
 			if err != nil {
+				sm.eventBus.Emit(sm.nodeID, events.EventType("SnapshotError"), "StateMachine", 0,
+					fmt.Sprintf("Failed to marshal snapshot data at index %d: %v", idx, err), err)
 				return
 			}
-			_ = sm.raftNode.Snapshot(idx, bytes)
+			if err := sm.raftNode.Snapshot(idx, bytes); err != nil {
+				sm.eventBus.Emit(sm.nodeID, events.EventType("SnapshotError"), "StateMachine", 0,
+					fmt.Sprintf("Failed to take snapshot at index %d: %v", idx, err), err)
+				return
+			}
 		}(snapIndex, snap)
 	}
 }
