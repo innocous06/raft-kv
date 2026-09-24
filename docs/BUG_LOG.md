@@ -130,3 +130,20 @@ As outlined in the design blueprint, real distributed systems testing surfaces s
 * **Root Cause**: `c.endpoints[idx]` accessed elements without verifying `len(c.endpoints) > 0`.
 * **Fix**: Added early return in `retryLoop` if `len(c.endpoints) == 0`, returning `fmt.Errorf("no cluster endpoints configured")`.
 
+---
+
+### Bug 17: Torn Write Tail Truncation Leak on Partial EOF Header
+* **Trigger/Test**: `TestGrill_CorruptWALRecovery`
+* **Symptom**: Fewer than 8 bytes at EOF broke the WAL read loop without truncating `wal.log`, leaving torn partial header bytes permanently on disk across reboots.
+* **Root Cause**: `LoadState()` checked `if err == io.EOF || err == io.ErrUnexpectedEOF` and broke out without truncating to `startOffset`.
+* **Fix**: Enforced `_ = os.Truncate(d.walFile, startOffset)` whenever `err != nil || n < 8`, restoring `wal.log` cleanly to the last verified record boundary.
+
+---
+
+### Bug 18: Unbounded Slice Allocation Hazard on Corrupted WAL Length
+* **Trigger/Test**: `TestGrill_CorruptWALRecovery`
+* **Symptom**: A corrupted 4-byte length field in a WAL header specifying an extreme value (e.g. 4 GB) crashed the process with out-of-memory allocation panics.
+* **Root Cause**: Unbounded `make([]byte, length)` allocated directly based on unchecked disk bytes before checksum evaluation.
+* **Fix**: Capped single record allocation to 32 MB, snapshot headers to 16 MB, and snapshot payloads to 256 MB, safely truncating corrupted logs before memory allocation.
+
+
