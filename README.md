@@ -4,7 +4,7 @@
 
 [![Interactive Simulator](https://img.shields.io/badge/Interactive%20Simulator-GitHub%20Pages-c28f2c.svg)](https://innocous06.github.io/raft-kv/)
 [![Go Version](https://img.shields.io/badge/Go-1.22+-2b2823.svg?logo=go)](https://golang.org)
-[![Test Suite](https://img.shields.io/badge/Tests-24%2F24%20Passing%20(1%2C000%20Randomized%20Runs)-2e4c23.svg)](#6-verification-matrix--chaos-testing)
+[![Test Suite](https://img.shields.io/badge/Tests-25%2F25%20Passing%20(1%2C000%20Randomized%20Runs)-2e4c23.svg)](#6-verification-matrix--chaos-testing)
 [![License: MIT](https://img.shields.io/badge/License-MIT-8c857b.svg)](LICENSE)
 
 ---
@@ -64,6 +64,8 @@ Raft-KV includes an **in-repo implementation of the Wing & Gong (1993) sequentia
 
 ## 3. Architecture & Design Decisions
 
+> Non-obvious trade-offs and rejected alternatives are tracked in the [Design Decisions Log](docs/decisions.md).
+
 ### 1. Actor Event Loop
 All mutable Raft consensus state (term, votedFor, log entries, commit index, role transitions) resides inside a single goroutine event loop (`n.run()` in `internal/raft/node.go`). Outside RPC calls and client requests communicate via Go channels, avoiding lock inversion and mutex deadlocks.
 
@@ -111,7 +113,7 @@ All endpoints communicate via standard JSON over HTTP.
 ## 5. Build & Execution
 
 ### Prerequisites
-* Go 1.22+ (tested on Go 1.26)
+* Go 1.22+
 
 ### Building Binaries
 
@@ -269,6 +271,8 @@ See [`docs/bug-log.md`](docs/bug-log.md) for full reproduction steps, root cause
 
 ## 10. Limitations & Non-Goals
 
+> A detailed breakdown of operational non-goals and system boundaries is documented in [`docs/limitations.md`](docs/limitations.md).
+
 To maintain clarity of scope, this implementation intentionally omits several features required for multi-tenant production deployments:
 
 * **Storage Architecture Trade-offs:** Rather than maintaining a full append-only WAL with inline truncation records, `DiskStorage` uses atomic snapshot-rewrite per persist. This provides straightforward CRC verification and torn-write protection at the cost of disk throughput (~119 ops/sec). Each file is individually fsynced and replaced atomically via `os.Rename` with parent directory fsync; the metadata and log files are replaced sequentially. No full append-only WAL is implemented, and no crash-safe directory-level joint atomicity across power loss is claimed for multi-file replacements.
@@ -287,10 +291,20 @@ An interactive visualization of Raft consensus is hosted via GitHub Pages:
 
 * **Live Simulator:** [https://innocous06.github.io/raft-kv/](https://innocous06.github.io/raft-kv/)
 
-*Clarification:* This is a visualization written in JavaScript that simulates the protocol; the real implementation is the Go code.
+*Clarification:* This is a client-side visualization written in JavaScript that simulates the protocol concepts; the real consensus implementation is the Go engine in this repository.
 
 ---
 
-## 12. License
+## 12. References & Prior Work
+
+* **Ongaro & Ousterhout (2014):** [In Search of an Understandable Consensus Algorithm](https://raft.github.io/raft.pdf) (USENIX ATC '14)
+* **Wing & Gong (1993):** Testing and Verifying Concurrent Objects (JPDC)
+* **Gibbons & Korach (1997):** Testing Shared Memories (SIAM J. Comput.)
+* **Lamport (2002):** Specifying Systems: The TLA+ Language and Tools
+* Full bibliography and prior work citations: [`docs/references.md`](docs/references.md)
+
+---
+
+## 13. License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
