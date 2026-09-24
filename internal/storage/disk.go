@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"raft-kv/internal/raft"
@@ -47,20 +48,25 @@ func NewDiskStorage(dir string) (*DiskStorage, error) {
 	}, nil
 }
 
-// syncDir attempts to flush directory metadata changes to disk.
+// syncDir attempts to flush directory metadata changes to disk across platforms where supported.
 // Note on OS differences:
 // On POSIX file systems (ext4, xfs, etc.), fsync on a directory file descriptor
-// guarantees directory entry durability after rename.
+// guarantees directory entry durability after rename; failures are returned.
 // On Windows, directory handles cannot be flushed via standard user-mode sync
 // (FlushFileBuffers fails on directory handles), so directory fsync is best-effort
 // and a no-op on Windows.
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
+	if runtime.GOOS == "windows" {
 		return nil
 	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("failed to open directory for sync: %w", err)
+	}
 	defer d.Close()
-	_ = d.Sync()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("failed to sync directory: %w", err)
+	}
 	return nil
 }
 
@@ -101,7 +107,9 @@ func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.Log
 	if err := os.Rename(tmpMeta, d.metaFile); err != nil {
 		return fmt.Errorf("failed to rename metadata: %w", err)
 	}
-	_ = syncDir(d.dir)
+	if err := syncDir(d.dir); err != nil {
+		return err
+	}
 
 	tmpWAL := d.walFile + ".tmp"
 	f, err := os.OpenFile(tmpWAL, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -142,7 +150,9 @@ func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.Log
 	if err := os.Rename(tmpWAL, d.walFile); err != nil {
 		return fmt.Errorf("failed to rename wal: %w", err)
 	}
-	_ = syncDir(d.dir)
+	if err := syncDir(d.dir); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -273,7 +283,9 @@ func (d *DiskStorage) SaveSnapshot(snapshot []byte, lastIncludedIndex uint64, la
 	if err := os.Rename(tmpSnap, d.snapFile); err != nil {
 		return err
 	}
-	_ = syncDir(d.dir)
+	if err := syncDir(d.dir); err != nil {
+		return err
+	}
 	return nil
 }
 
