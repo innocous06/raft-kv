@@ -8,6 +8,8 @@ import (
 	"raft-kv/internal/kv"
 )
 
+// BenchmarkWriteThroughput_3Nodes measures pure consensus protocol, actor event loop,
+// and state machine commit throughput in-memory over SimNet (without disk fsync overhead).
 func BenchmarkWriteThroughput_3Nodes(b *testing.B) {
 	c, err := NewCluster(3, false, "", 401)
 	if err != nil {
@@ -32,6 +34,38 @@ func BenchmarkWriteThroughput_3Nodes(b *testing.B) {
 		}, 3*time.Second)
 		if err != nil {
 			b.Fatalf("write failed at iteration %d: %v", i, err)
+		}
+	}
+	b.StopTimer()
+}
+
+// BenchmarkWriteThroughput_Disk_3Nodes measures end-to-end consensus throughput with
+// durable on-disk WAL persistence and CRC32 checksums (real fsync).
+func BenchmarkWriteThroughput_Disk_3Nodes(b *testing.B) {
+	dir := b.TempDir()
+	c, err := NewCluster(3, true, dir, 404)
+	if err != nil {
+		b.Fatalf("failed to create cluster: %v", err)
+	}
+	defer c.Stop()
+	c.Start()
+
+	_, err = c.WaitLeader(3 * time.Second)
+	if err != nil {
+		b.Fatalf("failed to elect leader: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := c.Submit(kv.Op{
+			Type:     kv.OpPut,
+			Key:      fmt.Sprintf("bench-disk-k-%d", i%100),
+			Value:    "benchmark-payload-value",
+			ClientID: "benchmarker-disk",
+			SeqNum:   uint64(i + 1),
+		}, 5*time.Second)
+		if err != nil {
+			b.Fatalf("disk write failed at iteration %d: %v", i, err)
 		}
 	}
 	b.StopTimer()
