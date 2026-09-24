@@ -186,4 +186,40 @@ As outlined in the design blueprint, real distributed systems testing surfaces s
 * **Root Cause**: Heuristic estimation of compacted boundary using slice length difference.
 * **Fix**: Added `LastIncludedIndex` to `NodeState` and validated `idx <= st.LastIncludedIndex` directly.
 
+---
+
+### Bug 24: Unhandled Persistence Error in becomeFollower
+* **Discovery & Verification**: Found by review, fixed, and regression-tested.
+* **Trigger/Test**: Disk failure or out-of-space error when node steps down to a higher term upon receiving higher-term RPC.
+* **Symptom**: Node updated currentTerm and cleared votedFor in memory, but failed to persist to disk. After crash, node could vote twice in that term.
+* **Root Cause**: `becomeFollower` discarded `persist()` error with `_ =`.
+* **Fix**: Evaluated `persist()` error in `becomeFollower`. On failure, emitted `StorageFatal` event and terminated node (`go n.Stop()`) to refuse unpersisted operation.
+
+---
+
+### Bug 25: Follower Uncommitted Log Desynchronization on Persist Failure in processAppendEntries
+* **Discovery & Verification**: Found by review, fixed, and regression-tested.
+* **Trigger/Test**: Disk write failure during follower `AppendEntries` processing after entries were appended to in-memory log.
+* **Symptom**: Followers kept non-durable entries in memory while returning `Success: false`. Subsequent heartbeats matching `prevLogIndex` could falsely acknowledge them.
+* **Root Cause**: Entries were appended to in-memory log prior to `persist()`, with no rollback on disk error.
+* **Fix**: Staged pre-append log snapshot via `n.log.AllEntries()`. On `n.persist()` failure, restored in-memory log using `n.log.RestoreEntries(preAppendEntries)`, emitted `StorageFatal`, and terminated node (`go n.Stop()`).
+
+---
+
+### Bug 26: Missing Directory Metadata fsync After File Rename
+* **Discovery & Verification**: Found by review, fixed, and regression-tested.
+* **Trigger/Test**: Sudden power loss immediately following atomic file replacement via `os.Rename`.
+* **Symptom**: File contents were flushed via file-descriptor `Sync()`, but parent directory metadata was not fsynced on POSIX file systems.
+* **Root Cause**: Absence of directory handle sync after `os.Rename` calls in `SaveState` and `SaveSnapshot`.
+* **Fix**: Added `syncDir(dir string)` helper executing `Sync()` on parent directory handle after rename operations.
+
+---
+
+### Bug 27: Silently Discarded Snapshot Error in checkSnapshotThreshold
+* **Discovery & Verification**: Found by review, fixed, and regression-tested.
+* **Trigger/Test**: Snapshot compaction failure in state machine background goroutine.
+* **Symptom**: Error from `sm.raftNode.Snapshot()` was discarded with `_ =`, hiding compaction failures under disk pressure.
+* **Root Cause**: Unchecked error return in asynchronous goroutine.
+* **Fix**: Evaluated error from `sm.raftNode.Snapshot()` and emitted structured `SnapshotError` event to the cluster event bus.
+
 

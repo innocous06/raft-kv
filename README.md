@@ -250,18 +250,18 @@ java -cp tla2tools.jar tlc2.TLC -dfid 8 -config MC.cfg MC.tla
 
 ## 9. Bug Log & Root Cause Analysis
 
-A central part of engineering consensus protocols is surfacing and documenting edge cases found during testing. The full history of 18 bugs identified by the test harness and resolved is documented in [`docs/bug-log.md`](docs/bug-log.md).
+A central part of engineering consensus protocols is surfacing and documenting edge cases found during testing and adversarial review. The full history of 27 bugs—**found by review, fixed, and regression-tested**—is documented in [`docs/bug-log.md`](docs/bug-log.md).
 
-### Notable Bugs Caught by Harness
-1. **Commit Index Bounds on Heartbeats (§5.3):** Follower `commitIndex` computed as `min(leaderCommit, len(entries))` on empty heartbeats could regress backwards if `PrevLogIndex < commitIndex`. Resolved by clamping heartbeats to `n.log.LastIndex()` and enforcing monotonic advancement.
-2. **Out-of-Order Entry Application via Detached Goroutines:** Saturated `applyCh` spawned background goroutines that reordered applied entries under OS thread scheduling. Resolved with a thread-safe FIFO queue governed by `sync.Cond`.
-3. **Duplicate Vote Counting on Retransmissions (§5.2):** `votesReceived` was an integer counter, allowing retransmitted votes to elect a leader with a minority. Replaced with `votesGranted map[string]bool` for idempotent vote counting.
-4. **Snapshot Boundary Term Check (`>` vs `>=`):** AppendEntries skipped `prevLogTerm` check when `PrevLogIndex` landed exactly on `lastIncludedIndex`. Resolved by extending check to `>=`.
-5. **Proposal Waiter Registration Race:** Fast commits completed before `Execute()` registered its channel in `waiters`. Resolved with an applied-results ring cache.
-6. **Async Snapshot State Divergence:** Background goroutine acquired `RLock()` asynchronously, allowing subsequent commands to mutate state before serialization. Resolved with synchronous state cloning under lock.
-7. **Torn WAL Header Truncation Leak:** Partial header reads (< 8 bytes) broke the read loop without truncating trailing corrupt bytes from disk. Resolved by truncating `wal.log` to `startOffset` upon any partial read.
+### Notable Bugs Caught and Resolved
+1. **Commit Index Bounds on Heartbeats (§5.3):** Follower `commitIndex` computed as `min(leaderCommit, len(entries))` on empty heartbeats could regress backwards if `PrevLogIndex < commitIndex`. Clamped heartbeats to `n.log.LastIndex()`.
+2. **Out-of-Order Entry Application:** Saturated channels spawned detached goroutines that reordered applied entries under OS thread scheduling. Resolved with a thread-safe FIFO queue governed by `sync.Cond`.
+3. **Duplicate Vote Counting on Retransmissions (§5.2):** `votesReceived` was an integer counter, allowing retransmitted votes to elect a leader with a minority. Replaced with `votesGranted map[string]bool`.
+4. **Vote Preservation on Step Down (§5.2):** `becomeFollower` wiped `votedFor` unconditionally even on same-term transitions, risking double-voting. Restricted clearing to strict term increments (`term > n.currentTerm`).
+5. **Durable Persistence Error Handling:** Swallowed disk errors allowed nodes to grant votes or acknowledge uncommitted entries without durability. Refactored `persist() error` and enforced fatal node shutdown and log rollback on write failure.
+6. **Log Reconciliation Skew on Compaction:** WAL entries $\le \text{lastIncludedIndex}$ following a crash shifted slice index offsets. Pruned in `NewRaftLog`.
+7. **Directory Sync & File Ordering:** Added parent directory fsync after atomic rename and documented sequential replacement ordering.
 
-See [`docs/bug-log.md`](docs/bug-log.md) for full reproduction steps and commit references.
+See [`docs/bug-log.md`](docs/bug-log.md) for full reproduction steps, root cause analyses, and commit references.
 
 ---
 
@@ -269,6 +269,7 @@ See [`docs/bug-log.md`](docs/bug-log.md) for full reproduction steps and commit 
 
 To maintain clarity of scope, this implementation intentionally omits several features required for multi-tenant production deployments:
 
+* **Storage Architecture Trade-offs:** `DiskStorage` uses atomic snapshot-rewrite per persist rather than an append-only WAL with in-line truncation records. This provides straightforward CRC verification and torn-write protection at the cost of disk throughput (~119 ops/sec). Each file is individually fsynced and replaced atomically with parent directory fsync; the metadata and WAL files are replaced sequentially rather than jointly atomic across power loss.
 * **No Dynamic Membership Changes (Raft §6):** Cluster membership is fixed at configuration time. Joint consensus and single-server reconfiguration are not implemented.
 * **No Pre-Vote Protocol (§9.6):** Partitioned nodes that reconnect with higher terms can force unnecessary re-elections upon rejoining the cluster.
 * **No Network Encryption / Authentication:** RPC communication uses plain JSON over HTTP and does not include TLS/mTLS or token-based authentication.
