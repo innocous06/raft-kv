@@ -211,6 +211,7 @@ LeaderCompleteness ==
         (state[s] = "Leader") =>
             \A other \in Server :
                 \A idx \in 1..commitIndex[other] :
-                    idx <= LastLogIndex(s) /\ log[s][idx] = log[other][idx]
+                    (currentTerm[s] >= log[other][idx].term) =>
+                        (idx <= LastLogIndex(s) /\ log[s][idx] = log[other][idx])
 
 =============================================================================

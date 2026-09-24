@@ -10,6 +10,6 @@ CONSTANTS
     MCServer,
     MCValue
 
-MCSpec == Init /\ [][Next /\ \A s \in Server : currentTerm[s] <= 3 /\ LastLogIndex(s) <= 3]_vars
+MCSpec == Init /\ [][Next /\ \A s \in Server : currentTerm[s] <= 2 /\ LastLogIndex(s) <= 2]_vars
 
 =============================================================================

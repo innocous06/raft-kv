@@ -3,3 +3,5 @@
 data/
 *.dat
 *.tmp
+*.jar
+specs/states/
