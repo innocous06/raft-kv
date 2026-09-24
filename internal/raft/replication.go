@@ -201,8 +201,9 @@ func (n *Node) checkAndAdvanceCommitIndex() {
 
 		if count >= majority {
 			n.commitIndex = idx
+			entry, _ := n.log.Entry(idx)
 			n.events.Emit(n.id, events.EntryCommitted, n.role.String(), n.currentTerm,
-				fmt.Sprintf("Committed entry index=%d (replicas=%d/%d)", idx, count, totalNodes), idx)
+				fmt.Sprintf("Committed entry index=%d (replicas=%d/%d)", idx, count, totalNodes), entry)
 			n.applyEntries()
 			break
 		}
@@ -327,6 +328,12 @@ func (n *Node) processAppendEntries(req *AppendEntriesRequest) *AppendEntriesRes
 		}
 	}
 
+	// Save pre-append state for rollback on disk persist failure
+	var preAppendEntries []LogEntry
+	if len(req.Entries) > 0 {
+		preAppendEntries = n.log.AllEntries()
+	}
+
 	// Rule 3 & 4: Append new entries, resolving conflicts (§5.3)
 	for i, entry := range req.Entries {
 		if entry.Index <= n.log.LastIncludedIndex() {
@@ -348,6 +355,10 @@ func (n *Node) processAppendEntries(req *AppendEntriesRequest) *AppendEntriesRes
 
 	if len(req.Entries) > 0 {
 		if err := n.persist(); err != nil {
+			n.log.RestoreEntries(preAppendEntries)
+			n.events.Emit(n.id, events.EventType("StorageFatal"), n.role.String(), n.currentTerm,
+				fmt.Sprintf("Fatal storage error in processAppendEntries: %v - stopping node", err), nil)
+			go n.Stop()
 			return &AppendEntriesResponse{
 				Term:    n.currentTerm,
 				Success: false,

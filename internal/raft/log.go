@@ -174,3 +174,9 @@ func (l *RaftLog) AllEntries() []LogEntry {
 func (l *RaftLog) TotalCount() int {
 	return int(l.lastIncludedIndex) + len(l.entries)
 }
+
+// RestoreEntries replaces all uncompacted entries with a given slice (used for rollback on persist failure).
+func (l *RaftLog) RestoreEntries(entries []LogEntry) {
+	l.entries = make([]LogEntry, len(entries))
+	copy(l.entries, entries)
+}

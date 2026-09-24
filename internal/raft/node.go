@@ -333,7 +333,12 @@ func (n *Node) becomeFollower(term uint64, leaderID string) {
 		n.currentTerm = term
 		n.votedFor = ""
 	}
-	_ = n.persist()
+	if err := n.persist(); err != nil {
+		n.events.Emit(n.id, events.EventType("StorageFatal"), n.role.String(), n.currentTerm,
+			fmt.Sprintf("Fatal storage error in becomeFollower: %v - stopping node", err), nil)
+		go n.Stop()
+		return
+	}
 
 	if prevRole != Follower || prevTerm != term {
 		n.events.Emit(n.id, events.RoleChanged, n.role.String(), n.currentTerm,
