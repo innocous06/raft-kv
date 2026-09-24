@@ -234,7 +234,7 @@ func (ic *InvariantChecker) checkLeaderCompleteness() error {
 		for idx, committedEntry := range ic.committed {
 			if committedEntry.Term < term {
 				// If index was compacted into snapshot, it was safely committed & compacted
-				if idx <= st.LastApplied && idx < st.LastIndex-uint64(len(leaderEntries)) {
+				if idx <= st.LastIncludedIndex {
 					continue
 				}
 				entryOnLeader, found := leaderMap[idx]

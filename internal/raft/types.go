@@ -101,10 +101,11 @@ type NodeState struct {
 	LeaderID    string `json:"leaderId"`
 	CommitIndex uint64 `json:"commitIndex"`
 	LastApplied uint64 `json:"lastApplied"`
-	LastIndex   uint64 `json:"lastIndex"`
-	LastTerm    uint64 `json:"lastTerm"`
-	LogLength   int    `json:"logLength"`
-	IsAlive     bool   `json:"isAlive"`
+	LastIndex         uint64 `json:"lastIndex"`
+	LastTerm          uint64 `json:"lastTerm"`
+	LastIncludedIndex uint64 `json:"lastIncludedIndex"`
+	LogLength         int    `json:"logLength"`
+	IsAlive           bool   `json:"isAlive"`
 }
 
 func (s NodeState) String() string {
