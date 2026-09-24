@@ -199,28 +199,33 @@ go test -v -count=1 ./harness
 
 ## 7. Performance Benchmarks & Empirical Measurements
 
-Benchmarks were executed on an AMD Ryzen 5 5600H (12 vCPUs) running Go 1.26 on Windows 11.
+Benchmarks were executed on an AMD Ryzen 5 5600H (12 vCPUs) running Go on Windows 11.
 
 ### A. Throughput & Allocation Matrix (`go test -bench=. -benchmem ./harness`)
 
-| Benchmark Scenario | Iterations | Latency (ns/op) | Throughput | Memory (B/op) | Allocations |
+| Benchmark Scenario | Storage Mode | Iterations | Latency (ns/op) | Throughput | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `WriteThroughput_3Nodes` | 500 ops | 42,895 ns/op | ~23,312 writes/sec | 15,682 B/op | 131 allocs/op |
-| `WriteThroughput_5Nodes` | 500 ops | 71,282 ns/op | ~14,028 writes/sec | 26,596 B/op | 215 allocs/op |
-| `ReadThroughput` | 1,000 ops | 47,881 ns/op | ~20,885 reads/sec | 14,213 B/op | 113 allocs/op |
+| `WriteThroughput_3Nodes` | In-Memory (SimNet) | 500 ops | 48,721 ns/op | ~20,525 writes/sec | Pure consensus & actor loop overhead |
+| `WriteThroughput_5Nodes` | In-Memory (SimNet) | 500 ops | 67,218 ns/op | ~14,876 writes/sec | 5-node actor event loop overhead |
+| `WriteThroughput_Disk_3Nodes` | Disk WAL (fsync) | 100 ops | 8,394,062 ns/op | ~119 writes/sec | Synchronous disk fsync + CRC32 WAL |
+| `ReadThroughput` | In-Memory (SimNet) | 1,000 ops | 47,881 ns/op | ~20,885 reads/sec | Linearizable read path |
 
-### B. Write Throughput vs. Quorum Scale
+### B. Write Throughput vs. Storage Mode
 
 ```
-Cluster Size    Throughput (ops/sec)
-3 Nodes         [========================================] 23,312 ops/sec (42.9 µs/op)
-5 Nodes         [========================]                 14,028 ops/sec (71.3 µs/op)
+Mode / Topology             Throughput (ops/sec)
+3 Nodes In-Memory (SimNet)  [========================================] 20,525 ops/sec (48.7 µs/op)
+5 Nodes In-Memory (SimNet)  [============================]             14,876 ops/sec (67.2 µs/op)
+3 Nodes Disk-Backed (fsync) [=]                                           119 ops/sec (8.39 ms/op)
 ```
+
+> [!NOTE]
+> The in-memory benchmarks isolate pure actor event loop scheduling, serialization, and simulated network round-trip overhead. The disk-backed benchmark reflects end-to-end durability with synchronous per-commit disk `fsync` and CRC32 verification.
 
 ### C. Election Convergence Latency
-Measured across 5 randomized election cycles per cluster topology:
-* **3-Node Cluster Average:** `122.0 ms`
-* **5-Node Cluster Average:** `122.2 ms`
+Measured across randomized election cycles per cluster topology:
+* **3-Node Cluster Average:** `130.2 ms`
+* **5-Node Cluster Average:** `126.2 ms`
 
 ---
 

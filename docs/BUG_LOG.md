@@ -146,4 +146,44 @@ As outlined in the design blueprint, real distributed systems testing surfaces s
 * **Root Cause**: Unbounded `make([]byte, length)` allocated directly based on unchecked disk bytes before checksum evaluation.
 * **Fix**: Capped single record allocation to 32 MB, snapshot headers to 16 MB, and snapshot payloads to 256 MB, safely truncating corrupted logs before memory allocation.
 
+---
+
+### Bug 19: Unconditional votedFor Reset on Step Down in Same Term
+* **Trigger/Test**: Candidate receiving `AppendEntries` from legitimate leader in the same term (`req.Term == n.currentTerm`).
+* **Symptom**: Potential double-voting if another candidate requested a vote in the same term, endangering Election Safety.
+* **Root Cause**: `becomeFollower()` cleared `votedFor = ""` unconditionally, even when term did not advance. Candidate had already voted for itself in that term.
+* **Fix**: Restricted `votedFor = ""` clearing to strict term increments (`term > n.currentTerm`).
+
+---
+
+### Bug 20: Swallowed Persistence Errors in Vote Granting and Replication
+* **Trigger/Test**: Disk failure or permission errors during `RequestVote` or `AppendEntries`.
+* **Symptom**: Node granted votes or acknowledged log entries without durable storage, violating durability guarantees.
+* **Root Cause**: `persist()` was void and silently discarded errors from `SaveState()`.
+* **Fix**: Changed `persist() error` and updated `processRequestVote`, `processAppendEntries`, and `handlePropose` to return failures when persistence fails.
+
+---
+
+### Bug 21: Obsolete Compacted Log Entry Infiltration in NewRaftLog
+* **Trigger/Test**: Restart recovery when WAL contains entries prior to snapshot compaction boundary due to crash before WAL truncation.
+* **Symptom**: Slice indexing skew in `toSliceIndex` causing incorrect log entry access or panic.
+* **Root Cause**: `NewRaftLog` copied all WAL entries without pruning those where `e.Index <= lastIncludedIndex`.
+* **Fix**: Filtered entries in `NewRaftLog` to prune any entry where `e.Index <= lastIncludedIndex`.
+
+---
+
+### Bug 22: Premature lastApplied Advancement on Missing Log Entry
+* **Trigger/Test**: Applying log entries when `Entry()` encountered a read failure or compaction boundary.
+* **Symptom**: `lastApplied` was permanently incremented past unapplied entries, silently skipping state machine mutations.
+* **Root Cause**: `lastApplied++` occurred before `n.log.Entry()` and continued on error.
+* **Fix**: Staged next index, verified entry retrieval first, and broke out of apply loop on failure before updating `lastApplied`.
+
+---
+
+### Bug 23: Leader Completeness Compaction Heuristic Underflow Hazard
+* **Trigger/Test**: Invariant verification during active log compaction.
+* **Symptom**: `idx < st.LastIndex - uint64(len(leaderEntries))` caused uint64 arithmetic underflow.
+* **Root Cause**: Heuristic estimation of compacted boundary using slice length difference.
+* **Fix**: Added `LastIncludedIndex` to `NodeState` and validated `idx <= st.LastIncludedIndex` directly.
+
 
