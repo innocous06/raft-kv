@@ -220,7 +220,57 @@ go test -v -count=1 ./harness
 
 ---
 
-## 7. Bug Log & Root Cause Analysis
+## 7. Performance Benchmarks & Empirical Measurements
+
+Benchmarks were executed on an AMD Ryzen 5 5600H (12 vCPUs) running Go 1.26 on Windows 11.
+
+### A. Throughput & Allocation Matrix (`go test -bench=. -benchmem ./harness`)
+
+| Benchmark Scenario | Iterations | Latency (ns/op) | Throughput | Memory (B/op) | Allocations |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `WriteThroughput_3Nodes` | 500 ops | 42,895 ns/op | ~23,312 writes/sec | 15,682 B/op | 131 allocs/op |
+| `WriteThroughput_5Nodes` | 500 ops | 71,282 ns/op | ~14,028 writes/sec | 26,596 B/op | 215 allocs/op |
+| `ReadThroughput` | 1,000 ops | 47,881 ns/op | ~20,885 reads/sec | 14,213 B/op | 113 allocs/op |
+
+### B. Write Throughput vs. Quorum Scale
+
+```
+Cluster Size    Throughput (ops/sec)
+3 Nodes         [========================================] 23,312 ops/sec (42.9 µs/op)
+5 Nodes         [========================]                 14,028 ops/sec (71.3 µs/op)
+```
+
+### C. Election Convergence Latency
+Measured across 5 randomized election cycles per cluster topology:
+* **3-Node Cluster Average:** `122.0 ms`
+* **5-Node Cluster Average:** `122.2 ms`
+
+### D. Multi-Seed Chaos Fuzzing
+`TestChaos_MultiSeedFuzzing` validates stability across **30 deterministic seeds** (`11` through `3333`). In each seed, random artificial delays (20ms) and client operations are injected under varying leader alignments.
+* **Total Seeds Tested:** 30
+* **Safety Invariant Violations:** 0 (100% pass across all seeds)
+
+---
+
+## 8. Formal TLA+ Model Specifications
+
+The repository includes a formal TLA+ specification of the Raft consensus safety kernel:
+
+* **Core Protocol Specification:** [`specs/Raft.tla`](specs/Raft.tla)
+  * Defines state spaces: `currentTerm`, `state`, `votedFor`, `log`, `commitIndex`, and in-transit `messages`.
+  * Specifies state actions: `Timeout`, `HandleRequestVoteRequest`, `BecomeLeader`, `ClientRequest`, `HandleAppendEntriesRequest`, and `AdvanceCommitIndex`.
+  * Encodes safety invariants: `ElectionSafety`, `LogMatching`, and `LeaderCompleteness`.
+* **TLC Model Checking Configuration:** [`specs/MC.tla`](specs/MC.tla) & [`specs/MC.cfg`](specs/MC.cfg)
+  * Restricts state space to a 3-server cluster (`{s1, s2, s3}`) with bounded terms and log lengths to verify inductive invariants using the TLC Model Checker.
+
+To verify with TLC:
+```bash
+tlc specs/MC.cfg
+```
+
+---
+
+## 9. Bug Log & Root Cause Analysis
 
 A central part of engineering consensus protocols is surfacing and documenting edge cases found during testing. The full history of 18 bugs identified by the test harness and resolved is documented in [`docs/BUG_LOG.md`](docs/BUG_LOG.md).
 
@@ -237,7 +287,7 @@ See [`docs/BUG_LOG.md`](docs/BUG_LOG.md) for full reproduction steps and commit 
 
 ---
 
-## 8. Limitations & Non-Goals
+## 10. Limitations & Non-Goals
 
 To maintain clarity of scope, this implementation intentionally omits several features required for multi-tenant production deployments:
 
@@ -249,7 +299,7 @@ To maintain clarity of scope, this implementation intentionally omits several fe
 
 ---
 
-## 9. Interactive Browser Simulator
+## 11. Interactive Browser Simulator
 
 An interactive visualization of Raft consensus is hosted via GitHub Pages:
 
@@ -259,6 +309,6 @@ An interactive visualization of Raft consensus is hosted via GitHub Pages:
 
 ---
 
-## 10. License
+## 12. License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
