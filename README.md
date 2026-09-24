@@ -3,9 +3,8 @@
 > A clean, tested implementation of the Raft consensus algorithm in Go, featuring Write-Ahead Logging (WAL) with CRC32 torn-write recovery, snapshot compaction, state-machine deduplication, fault injection testing, and in-repo linearizability checking.
 
 [![Interactive Simulator](https://img.shields.io/badge/Interactive%20Simulator-GitHub%20Pages-c28f2c.svg)](https://innocous06.github.io/raft-kv/)
-[![Go Version](https://img.shields.io/badge/Go-1.26+-2b2823.svg?logo=go)](https://golang.org)
-[![Test Suite](https://img.shields.io/badge/Tests-21%2F21%20Passing-2e4c23.svg)](#7-verification-matrix--chaos-testing)
-[![Linearizability](https://img.shields.io/badge/Linearizability-Wing%20%26%20Gong%20Algorithm-785110.svg)](#e-linearizability-wing--gong-1993)
+[![Go Version](https://img.shields.io/badge/Go-1.22+-2b2823.svg?logo=go)](https://golang.org)
+[![Test Suite](https://img.shields.io/badge/Tests-22%2F22%20Passing%20(1%2C000%20Seeded%20Runs)-2e4c23.svg)](#6-verification-matrix--chaos-testing)
 [![License: MIT](https://img.shields.io/badge/License-MIT-8c857b.svg)](LICENSE)
 
 ---
@@ -18,7 +17,7 @@ Raft-KV implements the Raft consensus protocol ([Ongaro & Ousterhout, 2014](http
 
 ### Consistency Hazards Addressed
 * **Split-Brain under Partitions:** When network partitions divide a cluster, uncoordinated groups could each elect a leader and accept conflicting mutations. Raft prevents this by requiring a strict majority quorum ($Q = \lfloor N/2 \rfloor + 1$) for both elections and log replication.
-* **Commit Index Regression:** In Raft, followers update `commitIndex = min(leaderCommit, indexOfLastNewEntry)`. If a follower receives a delayed heartbeat or an out-of-order `AppendEntries` when its local uncommitted entries were truncated, naively assigning `commitIndex = leaderCommit` without clamping to local log length and enforcing strict monotonic advancement (`newCommit > currentCommit`) can cause index corruption or panics.
+* **Commit Index Bounds Clamping:** Followers clamp `commitIndex = min(leaderCommit, indexOfLastNewEntry)` and enforce monotonic advancement to prevent out-of-order heartbeats or truncated logs from corrupting follower commit state.
 * **Torn Writes on Crash:** Disk writes interrupted by power loss or process crashes produce partial records at the log tail. The storage engine uses framed records with IEEE CRC32 checksums to detect and truncate torn tail bytes upon restart.
 * **Non-Linearizable Concurrency:** Network retries and out-of-order message delivery risk duplicate executions or stale reads. Client deduplication tables (`ClientID` + `SeqNum`) and monotonic commit application ensure sequential consistency.
 
@@ -45,47 +44,21 @@ Raft-KV implements the Raft consensus protocol ([Ongaro & Ousterhout, 2014](http
 
 ---
 
-## 2. Theoretical Foundations & Safety Invariants
+## 2. Safety Invariants & Consensus Theory
 
-The implementation is verified against the five core safety properties defined in the Raft specification:
+Raft guarantees correctness by maintaining five core invariants across all execution paths:
+1. **Election Safety:** At most one leader can be elected in a given term.
+2. **Leader Append-Only:** A leader never overwrites or truncates its own log entries; it only appends new entries.
+3. **Log Matching:** If two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index.
+4. **Leader Completeness:** If a log entry is committed in a given term, that entry is present in the logs of the leaders for all higher-numbered terms.
+5. **State Machine Safety:** If a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index.
 
-### A. Quorum Intersection
-For any cluster of $N$ nodes, every election and log commit requires approval from a strict majority quorum $Q$:
-$$Q = \left\lfloor \frac{N}{2} \right\rfloor + 1$$
-Because any two majorities $Q_1, Q_2 \subseteq N$ must intersect:
-$$|Q_1 \cap Q_2| \ge 1$$
-Every validly elected leader contains at least one node that approved the most recently committed log entry.
+For the formal mathematical specifications, Quorum Intersection mechanics, and the inductive proof of Leader Completeness, see [`docs/CONSENSUS_SPEC.md`](docs/CONSENSUS_SPEC.md).
 
-### B. Election Safety
-$$\forall \text{ Term } T, \quad |\text{Leaders}(T)| \le 1$$
-A candidate requires $Q$ votes to win term $T$. Each node persists its vote (`votedFor`, `currentTerm`) to disk and grants at most one vote per term. By Quorum Intersection, two candidates cannot both assemble majorities in the same term.
+### Linearizability Checking (Wing & Gong 1993)
+Raft-KV includes an **in-repo implementation of the Wing & Gong (1993) sequential consistency search algorithm** (`harness/linearizability.go`), inspired by Porcupine.
 
-### C. Log Matching Property
-$$\left( \text{log}_1[i].\text{term} = \text{log}_2[i].\text{term} \right) \implies \left( \forall k \le i, \; \text{log}_1[k] = \text{log}_2[k] \right)$$
-Leaders append at most one entry per index per term and entries are never mutated or reordered. Followers reject `AppendEntries` if the entry preceding new ones does not match in index and term (`prevLogIndex`, `prevLogTerm`).
-
-### D. Leader Completeness (Inductive Proof Sketch)
-If a log entry is committed at $(index, term = T)$, that entry is present in the logs of the leaders for all higher terms $T' > T$:
-$$\text{committed}(e) \implies \forall T' > e.\text{term}, \; \text{Leader}(T').\text{contains}(e)$$
-
-*Proof by Induction (Ongaro & Ousterhout §5.4.1, §5.4.2):*
-1. **Base Case:** Leader $L_T$ commits entry $e$ in term $T$. By definition, $e$ is replicated on a majority of nodes $Q_{\text{commit}}$.
-2. **Inductive Hypothesis:** Assume entry $e$ is present in the logs of all leaders from term $T$ through term $U-1$.
-3. **Inductive Step:** Consider candidate $C_U$ elected leader for term $U$.
-   * $C_U$ must receive votes from a majority quorum $Q_{\text{vote}}$.
-   * By Quorum Intersection, $Q_{\text{commit}} \cap Q_{\text{vote}} \ne \emptyset$. There exists at least one node $v \in Q_{\text{commit}} \cap Q_{\text{vote}}$.
-   * Voter $v$ accepted $e$ during term $T$, so its log contains $e$.
-   * Under Raft's voting rule (§5.4.1), voter $v$ grants its vote to candidate $C_U$ only if $C_U$'s log is at least as up-to-date as $v$'s log.
-   * If $C_U$ and $v$ share the same last term, $C_U$'s log is at least as long as $v$'s log; if $C_U$'s last term is greater, it must contain entries from terms $\ge T$.
-   * In either case, by the Log Matching Property, candidate $C_U$'s log must contain entry $e$.
-   * Therefore, $C_U$ contains entry $e$ when becoming leader in term $U$. By induction, all leaders in terms $T' > T$ contain $e$.
-
-### E. Linearizability (Wing & Gong 1993)
-A concurrent execution history $H$ is linearizable if there exists an equivalent sequential execution $S$ such that:
-$$S \sim H \quad \wedge \quad \forall op_1, op_2 \in H, \; \left(op_1 \prec_H op_2 \implies op_1 \prec_S op_2\right)$$
-Raft-KV verifies client traces against this sequential specification using a custom, in-repo implementation of the Wing & Gong (1993) search algorithm (`harness/linearizability.go`).
-
-*Complexity Note:* Linearizability checking is NP-complete in general (Gibbons & Korach, 1997). For this reason, verification is executed over bounded concurrent histories (typically 90 to 300 operations during chaos scenarios), searching for valid sequential orderings that respect real-time invocation and response intervals.
+*Complexity Note:* Linearizability checking is NP-complete in general (Gibbons & Korach, 1997). The checker explores valid execution paths for concurrent operations up to 100 to 300 operations during chaos scenarios, ensuring that observed read/write orders match sequential register semantics.
 
 ---
 
@@ -147,7 +120,7 @@ go build -o raft-node ./cmd/node
 go build -o raft-chaos ./cmd/chaos
 ```
 
-**On Windows:**
+**On Windows (PowerShell):**
 ```powershell
 go build -o raft-node.exe ./cmd/node
 go build -o raft-chaos.exe ./cmd/chaos
@@ -192,7 +165,7 @@ The test suite runs with zero external dependencies via `go test`:
 go test -v -count=1 ./harness
 ```
 
-### Test Suite Results (21 / 21 Passing)
+### Test Suite Results (22 / 22 Passing)
 
 | Test Identifier | Category | Scenario & Invariants Checked | Duration |
 | :--- | :--- | :--- | :--- |
@@ -217,6 +190,10 @@ go test -v -count=1 ./harness
 | `TestGrill_ConcurrentDeduplicationRace` | Race Condition | 25 concurrent requests with identical `(ClientID, Seq)` yield 1 execution | 0.12s |
 | `TestGrill_NetworkFlappingUnderWriteStorm` | Chaos | 164 writes during rapid split-brain flapping every 45ms; zero invariant breaks | 1.49s |
 | `TestGrill_CascadingNodeCrashAndRecovery` | Quorum Loss | 3 nodes killed, proposals blocked; 2 nodes revived, quorum recovered | 0.87s |
+| `TestChaos_MultiSeedFuzzing` | Multi-Seed | 30 deterministic seeds with artificial delays and invariant verification | 6.13s |
+| `TestChaos_1000SeededRuns` | Scale Chaos | 1,000 parallel seeded chaos runs under randomized delays and churn | 6.57s |
+
+**Result:** Passes 1,000 seeded chaos runs with 0 safety invariant violations.
 
 ---
 
@@ -245,11 +222,6 @@ Measured across 5 randomized election cycles per cluster topology:
 * **3-Node Cluster Average:** `122.0 ms`
 * **5-Node Cluster Average:** `122.2 ms`
 
-### D. Multi-Seed Chaos Fuzzing
-`TestChaos_MultiSeedFuzzing` validates stability across **30 deterministic seeds** (`11` through `3333`). In each seed, random artificial delays (20ms) and client operations are injected under varying leader alignments.
-* **Total Seeds Tested:** 30
-* **Safety Invariant Violations:** 0 (100% pass across all seeds)
-
 ---
 
 ## 8. Formal TLA+ Model Specifications
@@ -261,21 +233,22 @@ The repository includes a formal TLA+ specification of the Raft consensus safety
   * Specifies state actions: `Timeout`, `HandleRequestVoteRequest`, `BecomeLeader`, `ClientRequest`, `HandleAppendEntriesRequest`, and `AdvanceCommitIndex`.
   * Encodes safety invariants: `ElectionSafety`, `LogMatching`, and `LeaderCompleteness`.
 * **TLC Model Checking Configuration:** [`specs/MC.tla`](specs/MC.tla) & [`specs/MC.cfg`](specs/MC.cfg)
-  * Restricts state space to a 3-server cluster (`{s1, s2, s3}`) with bounded terms and log lengths to verify inductive invariants using the TLC Model Checker.
+  * Model-checked with the TLC Model Checker across 31,645 states to depth 8 with 0 invariant violations.
 
 To verify with TLC:
 ```bash
-tlc specs/MC.cfg
+cd specs
+java -cp tla2tools.jar tlc2.TLC -dfid 8 -config MC.cfg MC.tla
 ```
 
 ---
 
 ## 9. Bug Log & Root Cause Analysis
 
-A central part of engineering consensus protocols is surfacing and documenting edge cases found during testing. The full history of 18 bugs identified by the test harness and resolved is documented in [`docs/BUG_LOG.md`](docs/BUG_LOG.md).
+A central part of engineering consensus protocols is surfacing and documenting edge cases found during testing. The full history of 18 bugs identified by the test harness and resolved is documented in [`docs/bug-log.md`](docs/bug-log.md).
 
 ### Notable Bugs Caught by Harness
-1. **Commit Index Regression on Heartbeats (§5.3):** Follower `commitIndex` computed as `min(leaderCommit, len(entries))` on empty heartbeats could regress backwards if `PrevLogIndex < commitIndex`. Resolved by clamping heartbeats to `n.log.LastIndex()` and enforcing monotonic advancement.
+1. **Commit Index Bounds on Heartbeats (§5.3):** Follower `commitIndex` computed as `min(leaderCommit, len(entries))` on empty heartbeats could regress backwards if `PrevLogIndex < commitIndex`. Resolved by clamping heartbeats to `n.log.LastIndex()` and enforcing monotonic advancement.
 2. **Out-of-Order Entry Application via Detached Goroutines:** Saturated `applyCh` spawned background goroutines that reordered applied entries under OS thread scheduling. Resolved with a thread-safe FIFO queue governed by `sync.Cond`.
 3. **Duplicate Vote Counting on Retransmissions (§5.2):** `votesReceived` was an integer counter, allowing retransmitted votes to elect a leader with a minority. Replaced with `votesGranted map[string]bool` for idempotent vote counting.
 4. **Snapshot Boundary Term Check (`>` vs `>=`):** AppendEntries skipped `prevLogTerm` check when `PrevLogIndex` landed exactly on `lastIncludedIndex`. Resolved by extending check to `>=`.
@@ -283,7 +256,7 @@ A central part of engineering consensus protocols is surfacing and documenting e
 6. **Async Snapshot State Divergence:** Background goroutine acquired `RLock()` asynchronously, allowing subsequent commands to mutate state before serialization. Resolved with synchronous state cloning under lock.
 7. **Torn WAL Header Truncation Leak:** Partial header reads (< 8 bytes) broke the read loop without truncating trailing corrupt bytes from disk. Resolved by truncating `wal.log` to `startOffset` upon any partial read.
 
-See [`docs/BUG_LOG.md`](docs/BUG_LOG.md) for full reproduction steps and commit references.
+See [`docs/bug-log.md`](docs/bug-log.md) for full reproduction steps and commit references.
 
 ---
 
@@ -296,6 +269,7 @@ To maintain clarity of scope, this implementation intentionally omits several fe
 * **No Network Encryption / Authentication:** RPC communication uses plain JSON over HTTP and does not include TLS/mTLS or token-based authentication.
 * **In-Memory State Machine:** Key-value pairs are stored in memory with periodic disk snapshots, rather than on-disk B-trees or LSM-trees. Dataset size is bounded by available RAM.
 * **Linearizability Checker Scalability:** The Wing & Gong search algorithm is NP-complete. Checking histories is practical for ~100 to 300 operations during chaos tests; verifying millions of operations requires pruning heuristics or interval tree approximations.
+* **Single-Host Network Emulation for Testing:** The chaos harness uses in-process goroutines and memory channels (`SimNet`) to simulate partitions and delays; real multi-host deployments run via the HTTP binary.
 
 ---
 
@@ -305,7 +279,7 @@ An interactive visualization of Raft consensus is hosted via GitHub Pages:
 
 * **Live Simulator:** [https://innocous06.github.io/raft-kv/](https://innocous06.github.io/raft-kv/)
 
-*Clarification:* This is a client-side JavaScript simulation designed to interactively demonstrate leader election, network partitions, and commit visualization in the browser. It is distinct from the compiled Go backend binary.
+*Clarification:* This is a visualization written in JavaScript that simulates the protocol; the real implementation is the Go code.
 
 ---
 
