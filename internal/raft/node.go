@@ -51,8 +51,8 @@ type proposeMsg struct {
 }
 
 type proposeResult struct {
-	index uint64
-	term  uint64
+	index    uint64
+	term     uint64
 	isLeader bool
 }
 
@@ -82,28 +82,23 @@ type Node struct {
 	cfg Config
 	id  string
 
-	// Persistent state on all servers (Figure 2)
 	currentTerm uint64
 	votedFor    string
 	log         *RaftLog
 
-	// Volatile state on all servers
 	commitIndex uint64
 	lastApplied uint64
 	role        Role
 	leaderID    string
 
-	// Leader-only volatile state
 	nextIndex    map[string]uint64
 	matchIndex   map[string]uint64
 	votesGranted map[string]bool
 
-	// Sequential apply queue
 	applyMu    sync.Mutex
 	applyCond  *sync.Cond
 	applyQueue []ApplyMsg
 
-	// Infrastructure & channels
 	storage   Storage
 	transport Transport
 	clock     Clock
@@ -116,13 +111,12 @@ type Node struct {
 	appRespCh  chan appendResponseMsg
 	snapRespCh chan installSnapshotResponseMsg
 
-	stopCh    chan struct{}
-	stopped   int32
-	loopDone  chan struct{}
-	rng       *rand.Rand
-	rngMu     sync.Mutex
+	stopCh   chan struct{}
+	stopped  int32
+	loopDone chan struct{}
+	rng      *rand.Rand
+	rngMu    sync.Mutex
 
-	// Timers
 	electionTimer *time.Timer
 	heartbeatTick *time.Ticker
 }
@@ -149,21 +143,21 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 
 	n := &Node{
-		cfg:        cfg,
-		id:         cfg.ID,
-		role:       Follower,
-		storage:    cfg.Storage,
-		transport:  cfg.Transport,
-		clock:      cfg.Clock,
-		events:     cfg.EventBus,
-		applyCh:    cfg.ApplyCh,
-		rpcCh:      make(chan rpcCall, 200),
-		proposeCh:  make(chan proposeMsg, 200),
-		voteRespCh: make(chan voteResponseMsg, 100),
-		appRespCh:  make(chan appendResponseMsg, 100),
-		snapRespCh: make(chan installSnapshotResponseMsg, 50),
-		stopCh:     make(chan struct{}),
-		loopDone:   make(chan struct{}),
+		cfg:          cfg,
+		id:           cfg.ID,
+		role:         Follower,
+		storage:      cfg.Storage,
+		transport:    cfg.Transport,
+		clock:        cfg.Clock,
+		events:       cfg.EventBus,
+		applyCh:      cfg.ApplyCh,
+		rpcCh:        make(chan rpcCall, 200),
+		proposeCh:    make(chan proposeMsg, 200),
+		voteRespCh:   make(chan voteResponseMsg, 100),
+		appRespCh:    make(chan appendResponseMsg, 100),
+		snapRespCh:   make(chan installSnapshotResponseMsg, 50),
+		stopCh:       make(chan struct{}),
+		loopDone:     make(chan struct{}),
 		nextIndex:    make(map[string]uint64),
 		matchIndex:   make(map[string]uint64),
 		votesGranted: make(map[string]bool),
@@ -174,7 +168,6 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 	n.applyCond = sync.NewCond(&n.applyMu)
 
-	// Restore persistent state from storage if available
 	term, votedFor, entries, err := cfg.Storage.LoadState()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load persistent state: %w", err)
@@ -182,7 +175,6 @@ func NewNode(cfg Config) (*Node, error) {
 	n.currentTerm = term
 	n.votedFor = votedFor
 
-	// Restore snapshot if available
 	snapData, snapIndex, snapTerm, err := cfg.Storage.LoadSnapshot()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load snapshot: %w", err)
@@ -193,7 +185,6 @@ func NewNode(cfg Config) (*Node, error) {
 	n.lastApplied = snapIndex
 
 	if len(snapData) > 0 {
-		// Forward snapshot restore to state machine via ordered queue
 		n.enqueueApply(ApplyMsg{
 			SnapshotValid: true,
 			Snapshot:      snapData,
@@ -545,4 +536,3 @@ func (n *Node) GetLogEntries() []LogEntry {
 		return nil
 	}
 }
-

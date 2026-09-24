@@ -29,13 +29,11 @@ func (n *Node) startElection() {
 	totalNodes := len(n.cfg.Peers) + 1
 	majority := (totalNodes / 2) + 1
 
-	// If single node cluster, immediately win election
 	if len(n.votesGranted) >= majority {
 		n.becomeLeader()
 		return
 	}
 
-	// Request votes concurrently from peers
 	for _, peer := range n.cfg.Peers {
 		go func(p string) {
 			req := &RequestVoteRequest{
@@ -92,7 +90,6 @@ func (n *Node) becomeLeader() {
 	n.role = Leader
 	n.leaderID = n.id
 
-	// Initialize leader state
 	lastIndex := n.log.LastIndex()
 	for _, p := range n.cfg.Peers {
 		n.nextIndex[p] = lastIndex + 1
@@ -103,7 +100,6 @@ func (n *Node) becomeLeader() {
 		fmt.Sprintf("Elected leader for term %d with %d votes", n.currentTerm, len(n.votesGranted)), nil)
 	n.events.Emit(n.id, events.RoleChanged, n.role.String(), n.currentTerm, "Leader", nil)
 
-	// Send immediate heartbeats to assert leadership
 	n.broadcastAppendEntries()
 }
 

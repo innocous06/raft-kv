@@ -11,7 +11,7 @@ type ClientOp struct {
 	ClientID string    `json:"clientId"`
 	Type     string    `json:"type"` // "Put", "Get", "Delete"
 	Key      string    `json:"key"`
-	Value    string    `json:"value"`  // For Put: value written. For Get: value returned.
+	Value    string    `json:"value"` // For Put: value written. For Get: value returned.
 	Start    time.Time `json:"start"`
 	End      time.Time `json:"end"`
 	Success  bool      `json:"success"`

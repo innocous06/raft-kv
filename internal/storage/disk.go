@@ -52,7 +52,6 @@ func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.Log
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// 1. Write metadata atomically
 	metaBytes, err := json.Marshal(metaState{
 		Term:     term,
 		VotedFor: votedFor,
@@ -74,7 +73,6 @@ func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.Log
 		return fmt.Errorf("failed to rename metadata: %w", err)
 	}
 
-	// 2. Write WAL with CRC32 checksums per record
 	tmpWAL := d.walFile + ".tmp"
 	f, err := os.OpenFile(tmpWAL, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -127,7 +125,6 @@ func (d *DiskStorage) LoadState() (uint64, string, []raft.LogEntry, error) {
 	var votedFor string
 	var entries []raft.LogEntry
 
-	// Read metadata
 	if metaBytes, err := os.ReadFile(d.metaFile); err == nil {
 		var meta metaState
 		if err := json.Unmarshal(metaBytes, &meta); err == nil {
@@ -136,7 +133,6 @@ func (d *DiskStorage) LoadState() (uint64, string, []raft.LogEntry, error) {
 		}
 	}
 
-	// Read WAL
 	f, err := os.Open(d.walFile)
 	if err != nil {
 		if os.IsNotExist(err) {

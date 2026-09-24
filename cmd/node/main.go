@@ -25,11 +25,11 @@ import (
 
 func main() {
 	var (
-		nodeID       = flag.String("id", "node-1", "Unique node ID")
-		port         = flag.Int("port", 8001, "HTTP API & Web Dashboard port")
-		peersFlag    = flag.String("peers", "", "Comma-separated peer mappings: id=url,id=url (e.g. node-2=http://127.0.0.1:8002)")
-		dataDir      = flag.String("data", "", "Storage directory for WAL & snapshots (empty for memory)")
-		clusterSize  = flag.Int("cluster", 0, "Convenience mode: spin up an in-process cluster of N nodes (e.g. -cluster=3)")
+		nodeID      = flag.String("id", "node-1", "Unique node ID")
+		port        = flag.Int("port", 8001, "HTTP API & Web Dashboard port")
+		peersFlag   = flag.String("peers", "", "Comma-separated peer mappings: id=url,id=url (e.g. node-2=http://127.0.0.1:8002)")
+		dataDir     = flag.String("data", "", "Storage directory for WAL & snapshots (empty for memory)")
+		clusterSize = flag.Int("cluster", 0, "Convenience mode: spin up an in-process cluster of N nodes (e.g. -cluster=3)")
 	)
 	flag.Parse()
 
@@ -60,7 +60,6 @@ func runInProcessCluster(n int, port int) {
 
 	mux := http.NewServeMux()
 
-	// Cluster Status for all nodes
 	clusterStatusHandler := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var states []raft.NodeState
@@ -77,7 +76,6 @@ func runInProcessCluster(n int, port int) {
 	mux.HandleFunc("/api/v1/cluster", clusterStatusHandler)
 	mux.HandleFunc("/api/v1/status", clusterStatusHandler)
 
-	// Unified KV Put routing to current cluster leader
 	mux.HandleFunc("/api/v1/kv/put", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost {
@@ -112,7 +110,6 @@ func runInProcessCluster(n int, port int) {
 		_ = json.NewEncoder(w).Encode(api.APIResponse{Success: true, Value: res.Value})
 	})
 
-	// Unified KV Get routing
 	mux.HandleFunc("/api/v1/kv/get", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodGet {
@@ -135,7 +132,6 @@ func runInProcessCluster(n int, port int) {
 		_ = json.NewEncoder(w).Encode(api.APIResponse{Success: true, Value: res.Value})
 	})
 
-	// Unified KV Delete routing
 	mux.HandleFunc("/api/v1/kv/delete", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
@@ -169,7 +165,6 @@ func runInProcessCluster(n int, port int) {
 		_ = json.NewEncoder(w).Encode(api.APIResponse{Success: true, Value: res.Value})
 	})
 
-	// Replicated KV All
 	mux.HandleFunc("/api/v1/kv/all", func(w http.ResponseWriter, r *http.Request) {
 		leader, err := c.WaitLeader(500 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -184,14 +179,12 @@ func runInProcessCluster(n int, port int) {
 		}
 	})
 
-	// Live SSE Telemetry Stream
 	nodeIDs := c.NodeIDs()
 	firstNode, _ := c.GetNode(nodeIDs[0])
 	firstSM, _ := c.GetStateMachine(nodeIDs[0])
 	defaultAPI := api.NewServer(nodeIDs[0], firstNode, firstSM, c.EventBus(), nil)
 	mux.HandleFunc("/api/v1/events/stream", defaultAPI.Mux().ServeHTTP)
 
-	// Live Chaos Control Endpoints
 	mux.HandleFunc("/api/v1/chaos/isolate_leader", func(w http.ResponseWriter, r *http.Request) {
 		isolated, err := harness.IsolateLeader(c)
 		w.Header().Set("Content-Type", "application/json")
@@ -263,7 +256,6 @@ func runInProcessCluster(n int, port int) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "restarted": nodeID})
 	})
 
-	// Mount Dashboard UI
 	staticFS := http.StripPrefix("/static/", web.Handler())
 	mux.Handle("/static/", staticFS)
 	mux.Handle("/", web.Handler())

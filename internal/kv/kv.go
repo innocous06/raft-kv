@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	ErrNotLeader = errors.New("not leader")
-	ErrTimeout   = errors.New("operation timed out")
+	ErrNotLeader   = errors.New("not leader")
+	ErrTimeout     = errors.New("operation timed out")
 	ErrKeyNotFound = errors.New("key not found")
 )
 
@@ -43,8 +43,8 @@ type OpResult struct {
 
 // SnapshotData represents the full serialized state of the KV state machine.
 type SnapshotData struct {
-	Data  map[string]string        `json:"data"`
-	Dedup map[string]ClientRecord  `json:"dedup"`
+	Data  map[string]string       `json:"data"`
+	Dedup map[string]ClientRecord `json:"dedup"`
 }
 
 // StateMachine is the replicated key-value state machine.
@@ -135,7 +135,6 @@ func (sm *StateMachine) Execute(op Op, timeout time.Duration) (OpResult, error) 
 
 	select {
 	case res := <-waiter:
-		// Check if term changed while waiting
 		currentTerm, isStillLeader, _ := sm.raftNode.GetState()
 		if !isStillLeader || currentTerm != term {
 			return OpResult{}, fmt.Errorf("%w: leadership lost during replication", ErrNotLeader)
@@ -192,12 +191,9 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 	}
 
 	var result OpResult
-
-	// Check client deduplication table for mutating operations (Put, Delete)
 	if op.ClientID != "" && op.SeqNum > 0 {
 		rec, exists := sm.dedup[op.ClientID]
 		if exists && op.SeqNum <= rec.LastSeq {
-			// Duplicate request: return cached result
 			result = rec.LastResult
 			sm.notifyWaiter(msg.CommandIndex, result)
 			sm.checkSnapshotThreshold()
@@ -205,7 +201,6 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 		}
 	}
 
-	// Apply operation to state machine
 	switch op.Type {
 	case OpPut:
 		sm.data[op.Key] = op.Value
@@ -229,7 +224,6 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 		result = OpResult{Err: fmt.Sprintf("unknown operation type: %s", op.Type)}
 	}
 
-	// Record in deduplication table
 	if op.ClientID != "" && op.SeqNum > 0 && op.Type != OpGet {
 		sm.dedup[op.ClientID] = ClientRecord{
 			LastSeq:    op.SeqNum,

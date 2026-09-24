@@ -76,7 +76,6 @@ func (n *Node) handleAppendResponse(a appendResponseMsg) {
 	}
 
 	if a.resp.Success {
-		// Update peer progress
 		newMatch := a.req.PrevLogIndex + uint64(a.entriesSent)
 		if newMatch > n.matchIndex[a.peer] {
 			n.matchIndex[a.peer] = newMatch
@@ -88,12 +87,9 @@ func (n *Node) handleAppendResponse(a appendResponseMsg) {
 		// and log[N].Term == currentTerm, set commitIndex = N.
 		n.checkAndAdvanceCommitIndex()
 	} else {
-		// Log rejection with conflict optimization
 		if a.resp.ConflictTerm == 0 {
-			// Follower log too short
 			n.nextIndex[a.peer] = a.resp.ConflictIndex
 		} else {
-			// Follower has conflicting term
 			leaderHasTerm := false
 			var lastIndexWithTerm uint64
 			for i := n.log.LastIndex(); i > n.log.LastIncludedIndex(); i-- {
@@ -115,7 +111,6 @@ func (n *Node) handleAppendResponse(a appendResponseMsg) {
 			n.nextIndex[a.peer] = 1
 		}
 
-		// Trigger immediate retry
 		n.sendAppendEntriesToPeer(a.peer)
 	}
 }

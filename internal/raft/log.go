@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	ErrIndexCompacted = errors.New("log index has been compacted into snapshot")
+	ErrIndexCompacted  = errors.New("log index has been compacted into snapshot")
 	ErrIndexOutOfRange = errors.New("log index out of range")
 )
 

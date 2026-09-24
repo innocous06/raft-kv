@@ -13,12 +13,12 @@ import (
 )
 
 type Server struct {
-	nodeID    string
-	raftNode  *raft.Node
-	sm        *kv.StateMachine
-	eventBus  *events.Bus
-	mux       *http.ServeMux
-	allNodes  map[string]string // nodeID -> base url
+	nodeID   string
+	raftNode *raft.Node
+	sm       *kv.StateMachine
+	eventBus *events.Bus
+	mux      *http.ServeMux
+	allNodes map[string]string // nodeID -> base url
 }
 
 func NewServer(nodeID string, raftNode *raft.Node, sm *kv.StateMachine, bus *events.Bus, allNodes map[string]string) *Server {
