@@ -13,6 +13,7 @@ import (
 	"raft-kv/internal/api"
 	"raft-kv/internal/kv"
 	"raft-kv/internal/raft"
+	"raft-kv/internal/transport"
 )
 
 // TestEdgeCase_EmptyKeyHandling verifies that empty keys are rejected cleanly.
@@ -389,5 +390,89 @@ func TestEdgeCase_HeavyConcurrentWritesAndReads(t *testing.T) {
 	// Verify all safety invariants hold after intense concurrent traffic
 	if err := checker.CheckAll(); err != nil {
 		t.Fatalf("Invariant violation after concurrent traffic: %v", err)
+	}
+}
+
+// failingStorageStub simulates disk write errors on SaveState.
+type failingStorageStub struct {
+	mu       sync.Mutex
+	failSave bool
+}
+
+func (s *failingStorageStub) SaveState(term uint64, votedFor string, entries []raft.LogEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failSave {
+		return fmt.Errorf("simulated disk I/O failure: write failed")
+	}
+	return nil
+}
+
+func (s *failingStorageStub) LoadState() (uint64, string, []raft.LogEntry, error) {
+	return 1, "", nil, nil
+}
+
+func (s *failingStorageStub) SaveSnapshot(snapshot []byte, lastIncludedIndex uint64, lastIncludedTerm uint64) error {
+	return nil
+}
+
+func (s *failingStorageStub) LoadSnapshot() ([]byte, uint64, uint64, error) {
+	return nil, 0, 0, nil
+}
+
+func (s *failingStorageStub) Close() error {
+	return nil
+}
+
+// TestEdgeCase_StorageFailureProtection verifies that a node refusing storage persistence
+// does not grant votes, does not acknowledge appends, and halts immediately.
+func TestEdgeCase_StorageFailureProtection(t *testing.T) {
+	store := &failingStorageStub{}
+	cfg := raft.DefaultConfig("node-fail-test", []string{"peer-1", "peer-2"})
+	cfg.Storage = store
+	cfg.Transport = transport.NewSimNet(901)
+
+	node, err := raft.NewNode(cfg)
+	if err != nil {
+		t.Fatalf("Failed to initialize node: %v", err)
+	}
+	node.Start()
+	defer node.Stop()
+
+	// Inject disk write failure
+	store.mu.Lock()
+	store.failSave = true
+	store.mu.Unlock()
+
+	// 1. RequestVote under storage failure -> must NOT grant vote
+	voteResp, err := node.HandleRequestVote(&raft.RequestVoteRequest{
+		Term:         2,
+		CandidateID:  "peer-1",
+		LastLogIndex: 1,
+		LastLogTerm:  1,
+	})
+	if err == nil && voteResp.VoteGranted {
+		t.Fatalf("Expected node to refuse vote grant when persistence fails, got VoteGranted: true")
+	}
+
+	// 2. AppendEntries under storage failure -> must NOT succeed
+	appResp, err := node.HandleAppendEntries(&raft.AppendEntriesRequest{
+		Term:         2,
+		LeaderID:     "peer-1",
+		PrevLogIndex: 0,
+		PrevLogTerm:  0,
+		Entries: []raft.LogEntry{
+			{Index: 1, Term: 2, Data: []byte("unpersisted-entry")},
+		},
+		LeaderCommit: 0,
+	})
+	if err == nil && appResp.Success {
+		t.Fatalf("Expected AppendEntries to fail when persistence fails, got Success: true")
+	}
+
+	// 3. Node must transition to stopped state after fatal storage error
+	time.Sleep(100 * time.Millisecond)
+	if !node.IsStopped() {
+		t.Fatalf("Expected node to halt after fatal storage failure, but IsStopped() returned false")
 	}
 }
