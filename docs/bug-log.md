@@ -207,16 +207,16 @@ As outlined in the design blueprint, real distributed systems testing surfaces s
 ---
 
 ### Bug 26: Missing Directory Metadata fsync After File Rename
-* **Discovery & Verification**: Found by review, fixed, and regression-tested.
+* **Discovery & Verification**: Found by review, fixed; not testable without fault-injecting the filesystem.
 * **Trigger/Test**: Sudden power loss immediately following atomic file replacement via `os.Rename`.
 * **Symptom**: File contents were flushed via file-descriptor `Sync()`, but parent directory metadata was not fsynced on POSIX file systems.
 * **Root Cause**: Absence of directory handle sync after `os.Rename` calls in `SaveState` and `SaveSnapshot`.
-* **Fix**: Added `syncDir(dir string)` helper executing `Sync()` on parent directory handle after rename operations.
+* **Fix**: Added `syncDir(dir string)` helper executing `Sync()` on parent directory handle after rename operations (enforced on POSIX, no-op on Windows).
 
 ---
 
 ### Bug 27: Silently Discarded Snapshot Error in checkSnapshotThreshold
-* **Discovery & Verification**: Found by review, fixed, and regression-tested.
+* **Discovery & Verification**: Found by review, fixed; not testable without fault-injecting the filesystem.
 * **Trigger/Test**: Snapshot compaction failure in state machine background goroutine.
 * **Symptom**: Error from `sm.raftNode.Snapshot()` was discarded with `_ =`, hiding compaction failures under disk pressure.
 * **Root Cause**: Unchecked error return in asynchronous goroutine.

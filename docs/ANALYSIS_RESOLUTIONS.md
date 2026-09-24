@@ -12,13 +12,14 @@ The analysis bundle in this folder contains:
 1. `internal/raft/node.go`: Actor event loop, state transitions, fatal persist handling, and RPC dispatching.
 2. `internal/raft/election.go`: Candidate transitions, RequestVote processing, vote preservation, and durable state checks.
 3. `internal/raft/replication.go`: AppendEntries handler, Figure 8 commit rule, log rollback on write failure, and event-driven commit notifications.
-4. `internal/raft/log.go`: `RaftLog`, log compaction boundary reconciliation, and `RestoreEntries` rollback helper.
-5. `internal/storage/wal.go`: `DiskStorage`, per-file atomic fsync + rename, parent directory fsync, and CRC32 torn-write recovery.
-6. `internal/kv/kv.go` & `internal/kv/dedup.go`: Key-value state machine, linearizable client deduplication, and non-swallowed snapshot error handling.
-7. `harness/invariants.go`: Real-time invariant assertions with event-driven committed log capture.
-8. `specs/Raft.tla`, `specs/MC.tla`, `specs/MC.cfg`: Formal TLA+ specifications and TLC model checker configurations.
-9. `docs/bug-log.md`: Full post-mortem history of bugs 1 through 27.
-10. `REVIEWER_FEEDBACK.md`: Unabridged copy of the external review.
+4. `internal/raft/snapshot.go`: Snapshot creation, log compaction ordering, and InstallSnapshot RPC handling.
+5. `internal/raft/log.go`: `RaftLog`, log compaction boundary reconciliation, and `RestoreEntries` rollback helper.
+6. `internal/storage/wal.go`: `DiskStorage`, per-file atomic fsync + rename, parent directory fsync, and CRC32 torn-write recovery.
+7. `internal/kv/kv.go` & `internal/kv/dedup.go`: Key-value state machine, linearizable client deduplication, and non-swallowed snapshot error handling.
+8. `harness/invariants.go`: Real-time invariant assertions with event-driven committed log capture.
+9. `specs/Raft.tla`, `specs/MC.tla`, `specs/MC.cfg`: Formal TLA+ specifications and TLC model checker configurations.
+10. `docs/bug-log.md`: Full post-mortem history of bugs 1 through 27.
+11. `REVIEWER_FEEDBACK.md`: Unabridged copy of the external review.
 
 ---
 
@@ -36,8 +37,8 @@ The analysis bundle in this folder contains:
 
 ### Item 3 & 4: Parent Directory Fsync & Replacement Ordering
 * **Critique**: The parent directory was not fsynced after `os.Rename`. Also, metadata and WAL are separate rename steps, meaning the pair is not jointly atomic across power loss.
-* **Resolution**: *Found by review, fixed, and regression-tested.*
-  - Implemented `syncDir(dir string)` in `internal/storage/disk.go` to flush parent directory metadata via `d.Sync()` after `os.Rename` operations in both `SaveState` and `SaveSnapshot`.
+* **Resolution**: *Found by review, fixed; not testable without fault-injecting the filesystem.*
+  - Implemented `syncDir(dir string)` in `internal/storage/disk.go` to flush parent directory metadata via `d.Sync()` after `os.Rename` operations in both `SaveState` and `SaveSnapshot`. On POSIX systems (ext4, xfs) directory fsync is enforced and errors returned; on Windows it is best-effort and a no-op.
   - Documented the architecture openly in code comments, `docs/CONSENSUS_SPEC.md`, and `README.md`: each file is individually fsynced and replaced atomically; the pair is replaced sequentially (metadata first, then log file) rather than in a single multi-file transaction. No crash-safe directory-level joint atomicity is claimed for the pair.
 
 ### Item 5: Disk Storage Architecture Trade-offs (Full Rewrite vs Append-Only WAL)
@@ -57,5 +58,5 @@ The analysis bundle in this folder contains:
 
 ### Item 7: Snapshot Error Handling in `checkSnapshotThreshold`
 * **Critique**: `sm.raftNode.Snapshot(idx, bytes)` was called in a background goroutine with its error discarded (`_ =`).
-* **Resolution**: *Found by review, fixed, and regression-tested.*
+* **Resolution**: *Found by review, fixed; not testable without fault-injecting the filesystem.*
   - In `internal/kv/kv.go`, `checkSnapshotThreshold()` now evaluates the error from `Snapshot()` and marshaling. If an error occurs, it emits a structured `SnapshotError` event to the cluster event bus for diagnostics and monitoring.
