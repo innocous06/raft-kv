@@ -169,6 +169,9 @@ func NewNode(cfg Config) (*Node, error) {
 		votesGranted: make(map[string]bool),
 		rng:          rand.New(rand.NewSource(time.Now().UnixNano() + int64(hashString(cfg.ID)))),
 	}
+	if cfg.Storage == nil {
+		return nil, fmt.Errorf("storage engine must not be nil")
+	}
 	n.applyCond = sync.NewCond(&n.applyMu)
 
 	// Restore persistent state from storage if available

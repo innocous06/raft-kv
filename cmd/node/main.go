@@ -74,13 +74,21 @@ func runInProcessCluster(n int, port int) {
 
 	// Unified KV Put routing to current cluster leader
 	mux.HandleFunc("/api/v1/kv/put", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "method not allowed"})
 			return
 		}
 		var req api.PutRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "malformed JSON body: " + err.Error()})
+			return
+		}
+		if req.Key == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "key cannot be empty"})
 			return
 		}
 		res, err := c.Submit(kv.Op{
@@ -91,7 +99,6 @@ func runInProcessCluster(n int, port int) {
 			SeqNum:   req.SeqNum,
 		}, 3*time.Second)
 
-		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: err.Error()})
@@ -102,9 +109,19 @@ func runInProcessCluster(n int, port int) {
 
 	// Unified KV Get routing
 	mux.HandleFunc("/api/v1/kv/get", func(w http.ResponseWriter, r *http.Request) {
-		key := r.URL.Query().Get("key")
-		res, err := c.Submit(kv.Op{Type: kv.OpGet, Key: key}, 3*time.Second)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "method not allowed"})
+			return
+		}
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "missing key parameter"})
+			return
+		}
+		res, err := c.Submit(kv.Op{Type: kv.OpGet, Key: key}, 3*time.Second)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: err.Error()})
@@ -115,9 +132,21 @@ func runInProcessCluster(n int, port int) {
 
 	// Unified KV Delete routing
 	mux.HandleFunc("/api/v1/kv/delete", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "method not allowed"})
+			return
+		}
 		var req api.DeleteRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "malformed JSON body: " + err.Error()})
+			return
+		}
+		if req.Key == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "key cannot be empty"})
 			return
 		}
 		res, err := c.Submit(kv.Op{
@@ -126,7 +155,7 @@ func runInProcessCluster(n int, port int) {
 			ClientID: req.ClientID,
 			SeqNum:   req.SeqNum,
 		}, 3*time.Second)
-		w.Header().Set("Content-Type", "application/json")
+
 		if err != nil {
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: err.Error()})
@@ -162,7 +191,8 @@ func runInProcessCluster(n int, port int) {
 		isolated, err := harness.IsolateLeader(c)
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "isolated": isolated})
@@ -181,6 +211,7 @@ func runInProcessCluster(n int, port int) {
 	})
 
 	mux.HandleFunc("/api/v1/chaos/kill", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		nodeID := r.URL.Query().Get("node")
 		if nodeID == "" {
 			var body struct {
@@ -190,19 +221,21 @@ func runInProcessCluster(n int, port int) {
 			nodeID = body.Node
 		}
 		if nodeID == "" {
-			http.Error(w, "missing node parameter", http.StatusBadRequest)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "missing node parameter"})
 			return
 		}
 		err := c.CrashNode(nodeID)
-		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "killed": nodeID})
 	})
 
 	mux.HandleFunc("/api/v1/chaos/restart", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		nodeID := r.URL.Query().Get("node")
 		if nodeID == "" {
 			var body struct {
@@ -212,13 +245,14 @@ func runInProcessCluster(n int, port int) {
 			nodeID = body.Node
 		}
 		if nodeID == "" {
-			http.Error(w, "missing node parameter", http.StatusBadRequest)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "missing node parameter"})
 			return
 		}
 		err := c.RestartNode(nodeID)
-		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "restarted": nodeID})

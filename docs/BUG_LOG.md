@@ -92,10 +92,41 @@ As outlined in the design blueprint, real distributed systems testing surfaces s
 
 ---
 
-### Functional Gaps Resolved
+### Bug 12: Cluster Panic on Restarting Unknown Node ID
+* **Trigger/Test**: `TestEdgeCase_NonExistentNodeChaos` / POST `/api/v1/chaos/restart?node=unknown`
+* **Symptom**: Server panicked with nil pointer dereference on `cfg.Storage.LoadState()`.
+* **Root Cause**: `RestartNode(id)` lacked existence validation on `c.storages[id]`. Attempting to restart an unconfigured node passed `nil` storage into `NewNode`, crashing the process.
+* **Fix**: Added validation in `RestartNode` ensuring `id` is present in cluster configuration before proceeding, and added an explicit `cfg.Storage == nil` guard in `NewNode`.
 
-1. **Raft Safety Invariant Verifiers**: Fully implemented all 5 Raft safety invariants (`checkElectionSafety`, `checkLeaderAppendOnly`, `checkLogMatching`, `checkLeaderCompleteness`, `checkStateMachineSafety`) with real log and state introspection via `GetLogEntries()`.
-2. **Interactive Node Process Control**: Added `/api/v1/chaos/kill` and `/api/v1/chaos/restart` endpoints and corresponding buttons on each dashboard node card and chaos panel.
-3. **SimNet Duplication & Per-Node Latency**: Added `SetDuplicateRate` and `SetSlowNode` injection to simulate packet duplicates and asymmetric degraded nodes.
-4. **Typographic Sequence Diagram**: Embedded a clean ASCII/Unicode architectural walkthrough in `README.md` illustrating leader crash, election, and recovery.
+---
+
+### Bug 13: Stalled `lastApplied` Progression on Deduplicated and Malformed Commands
+* **Trigger/Test**: `TestEdgeCase_DeduplicationAndIdempotency` & `TestEdgeCase_MalformedCommandHandling`
+* **Symptom**: State machine `lastApplied` diverged from Raft log index when receiving duplicate or malformed client commands.
+* **Root Cause**: Early returns in `applyCommand` omitted `sm.lastApplied = msg.CommandIndex` and skipped `checkSnapshotThreshold()`.
+* **Fix**: Advanced `sm.lastApplied = msg.CommandIndex` unconditionally at the entrance of `applyCommand`, notified waiters on malformed JSON, and factored snapshot evaluation into `checkSnapshotThreshold()`.
+
+---
+
+### Bug 14: HTTP 409 vs 404 Status Misclassification on Missing Keys
+* **Trigger/Test**: `TestEdgeCase_HTTPAPIRoutes` (GET `/api/v1/kv/get?key=nonexistent`)
+* **Symptom**: REST API returned `409 Conflict` instead of `404 Not Found` when a queried key did not exist.
+* **Root Cause**: `handleGet` grouped all non-nil errors from `Execute()` under `http.StatusConflict` before checking `res.Found`.
+* **Fix**: Added explicit inspection for `kv.ErrKeyNotFound` in `handleGet`, mapping missing keys to `404 Not Found` and replication/leadership failures to `409 Conflict`.
+
+---
+
+### Bug 15: Empty Key Submissions Leading to State Inconsistencies
+* **Trigger/Test**: `TestEdgeCase_EmptyKeyHandling` (Put/Get/Delete with `""` key)
+* **Symptom**: State machine accepted zero-length keys, polluting internal maps and generating ambiguous API paths.
+* **Root Cause**: Lack of boundary validation for `op.Key == ""` in `StateMachine.Execute()` and HTTP API handlers.
+* **Fix**: Enforced strict validation across `Execute()` and API routing, returning `400 Bad Request` with structured JSON error `{"success": false, "error": "key cannot be empty"}`.
+
+---
+
+### Bug 16: Nil Pointer Panic on Empty Client Endpoints
+* **Trigger/Test**: Initializing `api.NewClient([]string{})`
+* **Symptom**: Index out of range panic in `retryLoop`.
+* **Root Cause**: `c.endpoints[idx]` accessed elements without verifying `len(c.endpoints) > 0`.
+* **Fix**: Added early return in `retryLoop` if `len(c.endpoints) == 0`, returning `fmt.Errorf("no cluster endpoints configured")`.
 

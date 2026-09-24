@@ -157,7 +157,11 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 
 func (c *Client) retryLoop(ctx context.Context, fn func(endpoint string) (bool, error)) error {
 	c.mu.Lock()
-	idx := c.leaderIdx
+	if len(c.endpoints) == 0 {
+		c.mu.Unlock()
+		return fmt.Errorf("no cluster endpoints configured")
+	}
+	idx := c.leaderIdx % len(c.endpoints)
 	c.mu.Unlock()
 
 	for {

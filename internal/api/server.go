@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -72,14 +73,23 @@ type APIResponse struct {
 }
 
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "method not allowed"})
 		return
 	}
 
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "malformed JSON body: " + err.Error()})
+		return
+	}
+
+	if req.Key == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "key cannot be empty"})
 		return
 	}
 
@@ -92,7 +102,6 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.sm.Execute(op, 3*time.Second)
-	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		_, _, leaderID := s.raftNode.GetState()
 		w.WriteHeader(http.StatusConflict)
@@ -111,14 +120,17 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "method not allowed"})
 		return
 	}
 
 	key := r.URL.Query().Get("key")
 	if key == "" {
-		http.Error(w, "missing key parameter", http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "missing key parameter"})
 		return
 	}
 
@@ -128,8 +140,15 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.sm.Execute(op, 3*time.Second)
-	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
+		if errors.Is(err, kv.ErrKeyNotFound) || err.Error() == kv.ErrKeyNotFound.Error() {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(APIResponse{
+				Success: false,
+				Error:   "key not found",
+			})
+			return
+		}
 		_, _, leaderID := s.raftNode.GetState()
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(APIResponse{
@@ -156,14 +175,23 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "method not allowed"})
 		return
 	}
 
 	var req DeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "malformed JSON body: " + err.Error()})
+		return
+	}
+
+	if req.Key == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "key cannot be empty"})
 		return
 	}
 

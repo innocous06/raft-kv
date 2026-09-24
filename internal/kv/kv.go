@@ -96,6 +96,10 @@ func (sm *StateMachine) Close() {
 
 // Execute submits an operation to Raft and waits for it to commit and apply.
 func (sm *StateMachine) Execute(op Op, timeout time.Duration) (OpResult, error) {
+	if op.Key == "" {
+		return OpResult{Err: "key cannot be empty"}, errors.New("key cannot be empty")
+	}
+
 	data, err := json.Marshal(op)
 	if err != nil {
 		return OpResult{}, err
@@ -179,8 +183,11 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	sm.lastApplied = msg.CommandIndex
+
 	var op Op
 	if err := json.Unmarshal(msg.Command, &op); err != nil {
+		sm.notifyWaiter(msg.CommandIndex, OpResult{Err: "malformed command payload"})
 		return
 	}
 
@@ -193,6 +200,7 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 			// Duplicate request: return cached result
 			result = rec.LastResult
 			sm.notifyWaiter(msg.CommandIndex, result)
+			sm.checkSnapshotThreshold()
 			return
 		}
 	}
@@ -216,6 +224,9 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 			delete(sm.data, op.Key)
 		}
 		result = OpResult{Value: val, Found: found}
+
+	default:
+		result = OpResult{Err: fmt.Sprintf("unknown operation type: %s", op.Type)}
 	}
 
 	// Record in deduplication table
@@ -226,10 +237,11 @@ func (sm *StateMachine) applyCommand(msg raft.ApplyMsg) {
 		}
 	}
 
-	sm.lastApplied = msg.CommandIndex
 	sm.notifyWaiter(msg.CommandIndex, result)
+	sm.checkSnapshotThreshold()
+}
 
-	// Check if log compaction / snapshot threshold reached
+func (sm *StateMachine) checkSnapshotThreshold() {
 	if sm.snapshotSize > 0 && sm.lastApplied%uint64(sm.snapshotSize) == 0 {
 		// Synchronously clone state under sm.mu.Lock() to guarantee point-in-time consistency
 		snapIndex := sm.lastApplied
@@ -291,6 +303,12 @@ func (sm *StateMachine) installSnapshot(snapData []byte, index uint64) {
 		sm.dedup = make(map[string]ClientRecord)
 	}
 	sm.lastApplied = index
+
+	for k := range sm.appliedResults {
+		if k <= index {
+			delete(sm.appliedResults, k)
+		}
+	}
 }
 
 // GetAll returns a copy of the key-value store for state inspection.

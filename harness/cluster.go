@@ -231,6 +231,14 @@ func (c *Cluster) RestartNode(id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if _, ok := c.storages[id]; !ok {
+		return fmt.Errorf("node %s not found in cluster configuration", id)
+	}
+
+	if node, exists := c.nodes[id]; exists && !node.IsStopped() {
+		return fmt.Errorf("node %s is already running", id)
+	}
+
 	if err := c.initNode(id); err != nil {
 		return err
 	}
