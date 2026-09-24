@@ -61,13 +61,20 @@ func (d *DiskStorage) SaveState(term uint64, votedFor string, entries []raft.Log
 	}
 
 	tmpMeta := d.metaFile + ".tmp"
-	if err := os.WriteFile(tmpMeta, metaBytes, 0644); err != nil {
+	fMeta, err := os.OpenFile(tmpMeta, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open temp metadata: %w", err)
+	}
+	if _, err := fMeta.Write(metaBytes); err != nil {
+		_ = fMeta.Close()
 		return fmt.Errorf("failed to write temp metadata: %w", err)
 	}
-	fMeta, err := os.Open(tmpMeta)
-	if err == nil {
-		_ = fMeta.Sync()
+	if err := fMeta.Sync(); err != nil {
 		_ = fMeta.Close()
+		return fmt.Errorf("failed to sync temp metadata: %w", err)
+	}
+	if err := fMeta.Close(); err != nil {
+		return fmt.Errorf("failed to close temp metadata: %w", err)
 	}
 	if err := os.Rename(tmpMeta, d.metaFile); err != nil {
 		return fmt.Errorf("failed to rename metadata: %w", err)
