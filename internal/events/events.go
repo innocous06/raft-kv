@@ -30,6 +30,8 @@ const (
 	PartitionHealed   EventType = "PartitionHealed"
 	ClientRequest     EventType = "ClientRequest"
 	ClientResponse    EventType = "ClientResponse"
+	StorageFatal      EventType = "StorageFatal"
+	SnapshotError     EventType = "SnapshotError"
 )
 
 // Event represents a structured event emitted by any node or cluster component.

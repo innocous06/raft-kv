@@ -59,17 +59,19 @@ func (n *Node) processSnapshot(msg snapshotMsg) error {
 		return fmt.Errorf("failed to get term for snapshot index %d: %w", msg.index, err)
 	}
 
-	if err := n.log.Compact(msg.index, term); err != nil {
-		return fmt.Errorf("failed to compact log: %w", err)
-	}
-
 	if n.storage != nil {
 		if err := n.storage.SaveSnapshot(msg.data, msg.index, term); err != nil {
 			return fmt.Errorf("failed to save snapshot: %w", err)
 		}
 	}
 
+	if err := n.log.Compact(msg.index, term); err != nil {
+		return fmt.Errorf("failed to compact log: %w", err)
+	}
+
 	if err := n.persist(); err != nil {
+		n.events.Emit(n.id, events.StorageFatal, n.role.String(), n.currentTerm, "persist failure after snapshot compaction", err)
+		go n.Stop()
 		return fmt.Errorf("failed to persist state after snapshot compaction: %w", err)
 	}
 	n.events.Emit(n.id, events.SnapshotSaved, n.role.String(), n.currentTerm,
