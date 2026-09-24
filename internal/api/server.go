@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"raft-kv/internal/events"
@@ -80,6 +81,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024*1024)
 	var req PutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -87,7 +89,7 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Key == "" {
+	if strings.TrimSpace(req.Key) == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "key cannot be empty"})
 		return
@@ -128,7 +130,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := r.URL.Query().Get("key")
-	if key == "" {
+	if strings.TrimSpace(key) == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "missing key parameter"})
 		return
@@ -182,6 +184,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024*1024)
 	var req DeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -189,7 +192,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Key == "" {
+	if strings.TrimSpace(req.Key) == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "key cannot be empty"})
 		return
@@ -222,14 +225,24 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetAll(w http.ResponseWriter, r *http.Request) {
-	all := s.sm.GetAll()
 	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "method not allowed"})
+		return
+	}
+	all := s.sm.GetAll()
 	_ = json.NewEncoder(w).Encode(all)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	state := s.raftNode.GetNodeState()
 	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(APIResponse{Success: false, Error: "method not allowed"})
+		return
+	}
+	state := s.raftNode.GetNodeState()
 	_ = json.NewEncoder(w).Encode(state)
 }
 

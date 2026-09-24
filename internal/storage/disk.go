@@ -148,20 +148,26 @@ func (d *DiskStorage) LoadState() (uint64, string, []raft.LogEntry, error) {
 	for {
 		startOffset := validOffset
 		n, err := io.ReadFull(f, header[:])
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if err == io.EOF {
 			break
 		}
 		if err != nil || n < 8 {
+			_ = f.Close()
+			_ = os.Truncate(d.walFile, startOffset)
 			break
 		}
 
 		length := binary.BigEndian.Uint32(header[0:4])
 		expectedChecksum := binary.BigEndian.Uint32(header[4:8])
+		if length > 32*1024*1024 {
+			_ = f.Close()
+			_ = os.Truncate(d.walFile, startOffset)
+			break
+		}
 
 		data := make([]byte, length)
 		n, err = io.ReadFull(f, data)
 		if err != nil || uint32(n) < length {
-			// Torn write at tail detected! Truncate to startOffset
 			_ = f.Close()
 			_ = os.Truncate(d.walFile, startOffset)
 			break
@@ -256,6 +262,9 @@ func (d *DiskStorage) LoadSnapshot() ([]byte, uint64, uint64, error) {
 	}
 
 	length := binary.BigEndian.Uint32(hdrLen[:])
+	if length > 16*1024*1024 {
+		return nil, 0, 0, fmt.Errorf("corrupt snapshot header length: %d", length)
+	}
 	hdrBytes := make([]byte, length)
 	if _, err := io.ReadFull(f, hdrBytes); err != nil {
 		return nil, 0, 0, nil
@@ -266,6 +275,9 @@ func (d *DiskStorage) LoadSnapshot() ([]byte, uint64, uint64, error) {
 		return nil, 0, 0, err
 	}
 
+	if header.DataLength > 256*1024*1024 {
+		return nil, 0, 0, fmt.Errorf("corrupt snapshot data length: %d", header.DataLength)
+	}
 	snapData := make([]byte, header.DataLength)
 	if _, err := io.ReadFull(f, snapData); err != nil {
 		return nil, 0, 0, err

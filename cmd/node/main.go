@@ -62,6 +62,11 @@ func runInProcessCluster(n int, port int) {
 
 	clusterStatusHandler := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "method not allowed"})
+			return
+		}
 		var states []raft.NodeState
 		for _, id := range c.NodeIDs() {
 			if n, ok := c.GetNode(id); ok {
@@ -83,13 +88,14 @@ func runInProcessCluster(n int, port int) {
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "method not allowed"})
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4*1024*1024)
 		var req api.PutRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "malformed JSON body: " + err.Error()})
 			return
 		}
-		if req.Key == "" {
+		if strings.TrimSpace(req.Key) == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "key cannot be empty"})
 			return
@@ -118,7 +124,7 @@ func runInProcessCluster(n int, port int) {
 			return
 		}
 		key := r.URL.Query().Get("key")
-		if key == "" {
+		if strings.TrimSpace(key) == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "missing key parameter"})
 			return
@@ -139,13 +145,14 @@ func runInProcessCluster(n int, port int) {
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "method not allowed"})
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4*1024*1024)
 		var req api.DeleteRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "malformed JSON body: " + err.Error()})
 			return
 		}
-		if req.Key == "" {
+		if strings.TrimSpace(req.Key) == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "key cannot be empty"})
 			return
@@ -166,8 +173,13 @@ func runInProcessCluster(n int, port int) {
 	})
 
 	mux.HandleFunc("/api/v1/kv/all", func(w http.ResponseWriter, r *http.Request) {
-		leader, err := c.WaitLeader(500 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(api.APIResponse{Success: false, Error: "method not allowed"})
+			return
+		}
+		leader, err := c.WaitLeader(500 * time.Millisecond)
 		if err != nil {
 			_ = json.NewEncoder(w).Encode(map[string]string{})
 			return
@@ -186,8 +198,13 @@ func runInProcessCluster(n int, port int) {
 	mux.HandleFunc("/api/v1/events/stream", defaultAPI.Mux().ServeHTTP)
 
 	mux.HandleFunc("/api/v1/chaos/isolate_leader", func(w http.ResponseWriter, r *http.Request) {
-		isolated, err := harness.IsolateLeader(c)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "method not allowed"})
+			return
+		}
+		isolated, err := harness.IsolateLeader(c)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
@@ -197,19 +214,34 @@ func runInProcessCluster(n int, port int) {
 	})
 
 	mux.HandleFunc("/api/v1/chaos/partition", func(w http.ResponseWriter, r *http.Request) {
-		maj, min := harness.PartitionMajorityMinority(c)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "method not allowed"})
+			return
+		}
+		maj, min := harness.PartitionMajorityMinority(c)
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "majority": maj, "minority": min})
 	})
 
 	mux.HandleFunc("/api/v1/chaos/heal", func(w http.ResponseWriter, r *http.Request) {
-		harness.HealNetwork(c)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "method not allowed"})
+			return
+		}
+		harness.HealNetwork(c)
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	})
 
 	mux.HandleFunc("/api/v1/chaos/kill", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "method not allowed"})
+			return
+		}
 		nodeID := r.URL.Query().Get("node")
 		if nodeID == "" {
 			var body struct {
@@ -234,6 +266,11 @@ func runInProcessCluster(n int, port int) {
 
 	mux.HandleFunc("/api/v1/chaos/restart", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "method not allowed"})
+			return
+		}
 		nodeID := r.URL.Query().Get("node")
 		if nodeID == "" {
 			var body struct {
