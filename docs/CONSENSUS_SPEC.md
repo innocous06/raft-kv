@@ -75,5 +75,21 @@ Bounded model checking to depth 8 explores 31,645 states with 0 invariant violat
 ## 5. Storage Durability & Atomicity Boundaries
 
 * **No full append-only WAL:** Rather than maintaining a continuously appended file with inline compaction/truncation records, `DiskStorage` uses atomic snapshot-rewrite per persist. Each persist writes all uncompacted entries to a temporary file, fsyncs, and atomically renames it.
-* **Sequential rather than jointly atomic file replacement:** Metadata (`metadata.json`) and log entries (`wal.log`) are replaced sequentially rather than within a single multi-file transaction. Each file is individually fsynced and replaced atomically via `os.Rename`, followed by a directory `Sync()`. No crash-safe directory-level joint atomicity across power loss is claimed for the pair.
+* **Sequential rather than jointly atomic file replacement:** Metadata (`metadata.json`) and log entries (`wal.log`) are replaced sequentially rather than within a single multi-file transaction. Each file is individually fsynced and replaced atomically via `os.Rename`, followed by a directory `Sync()`. Directory fsync is best-effort and a no-op on Windows. No crash-safe directory-level joint atomicity across power loss is claimed for the pair.
+
+---
+
+## 6. Storage Failure Matrix ("What happens if the disk fails?")
+
+The Raft implementation enforces crash-stop semantics on persistent storage failure:
+
+| Code Path | Operation / Context | Failure Handling | State Machine / Cluster Impact |
+| :--- | :--- | :--- | :--- |
+| `startElection` | Increment term & vote self | Reverts role to Follower, clears `votedFor`, decrements term, aborts election | Candidate does not solicit votes without durable term/vote record |
+| `processRequestVote` | Grant vote to candidate | Restores previous `votedFor`, returns `VoteGranted: false` | Candidate is refused; node cannot grant vote without durable record |
+| `processAppendEntries` | Append replicated entries | Restores pre-append log via `RestoreEntries()`, emits `StorageFatal`, returns `Success: false`, calls `go n.Stop()` | Follower halts immediately; unpersisted entries never acknowledged |
+| `becomeFollower` | Step down on higher term | Emits `StorageFatal` event, halts node via `go n.Stop()` | Node halts immediately rather than running with unpersisted term |
+| `handlePropose` | Leader client command | Truncates newly appended entry from in-memory log, replies `isLeader: false` | Phantom entries discarded; client receives failure and retries |
+| `TakeSnapshot` | Compact log with snapshot | Returns error without advancing snapshot markers or truncating log | Compaction aborts safely; previous log entries remain valid |
+| `checkSnapshotThreshold` | Async state machine snapshot | Evaluates error and emits structured `SnapshotError` event to event bus | Monitored via cluster event stream without silent error discarding |
 
