@@ -1,7 +1,24 @@
+# Binaries and executables
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test and runtime artifacts
 *.log
 data/
 *.dat
 *.tmp
+*.out
+*.test
+
+# Model checker states and tools
 *.jar
+states/
 specs/states/
+
+# OS metadata
+.DS_Store
+Thumbs.db
