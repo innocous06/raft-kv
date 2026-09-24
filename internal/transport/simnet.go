@@ -122,7 +122,6 @@ func (s *SimNet) Partition(groups ...[]string) {
 
 	s.disconnected = make(map[string]map[string]bool)
 
-	// Map node -> group index
 	nodeGroup := make(map[string]int)
 	for gIdx, group := range groups {
 		for _, node := range group {
@@ -251,7 +250,6 @@ func (s *SimNet) SendRequestVote(ctx context.Context, to string, req *raft.Reque
 	}
 
 	if s.shouldDuplicate() {
-		// Spawn duplicate retransmission asynchronously
 		go func(dupReq *raft.RequestVoteRequest, h raft.RPCHandler) {
 			time.Sleep(10 * time.Millisecond)
 			_, _ = h.HandleRequestVote(dupReq)

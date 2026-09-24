@@ -82,14 +82,12 @@ func (ic *InvariantChecker) checkElectionSafety(states map[string]raft.NodeState
 
 	for id, s := range states {
 		if s.Role == "Leader" {
-			// Check against other current leaders
 			if other, exists := currentTermLeaders[s.Term]; exists && other != id {
 				return fmt.Errorf("[INVARIANT VIOLATION] Election Safety violated! Multiple leaders in term %d: %s and %s",
 					s.Term, other, id)
 			}
 			currentTermLeaders[s.Term] = id
 
-			// Check against historical leaders
 			if prevLeader, exists := ic.leadersPerTerm[s.Term]; exists && prevLeader != id {
 				return fmt.Errorf("[INVARIANT VIOLATION] Election Safety violated! Historical leader %s replaced by %s in same term %d",
 					prevLeader, id, s.Term)
@@ -175,11 +173,9 @@ func (ic *InvariantChecker) checkLogMatching() error {
 				continue
 			}
 
-			// Find matching entries
 			for idx, e1 := range lm1 {
 				e2, exists := lm2[idx]
 				if exists && e1.Term == e2.Term {
-					// All entries prior to idx must match in both logs
 					for prevIdx := uint64(1); prevIdx < idx; prevIdx++ {
 						p1, p1Exists := lm1[prevIdx]
 						p2, p2Exists := lm2[prevIdx]

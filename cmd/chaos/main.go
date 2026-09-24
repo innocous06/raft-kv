@@ -50,7 +50,6 @@ func main() {
 	var wg sync.WaitGroup
 	stopChaos := make(chan struct{})
 
-	// Chaos injector
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -83,7 +82,6 @@ func main() {
 		}
 	}()
 
-	// Concurrent workload generators
 	numClients := 3
 	for i := 0; i < numClients; i++ {
 		wg.Add(1)
@@ -124,7 +122,6 @@ func main() {
 					Err:      fmt.Sprint(err),
 				})
 
-				// Read operation
 				start = time.Now()
 				res, err = c.Submit(kv.Op{
 					Type: kv.OpGet,
@@ -156,7 +153,6 @@ func main() {
 	fmt.Println("[REPORT] Raft Consensus Invariant & Consistency Summary")
 	fmt.Println("-----------------------------------------------------------------")
 
-	// Verify invariants
 	select {
 	case err := <-errCh:
 		fmt.Printf("[FAILURE] Safety Invariant Violated: %v\n", err)
@@ -170,7 +166,6 @@ func main() {
 		fmt.Println("     - Invariant 5 (State Machine Safety):  PASS [no diverging executions]")
 	}
 
-	// Verify linearizability
 	ops := history.Ops()
 	fmt.Printf("\n[VERIFY] Checking Linearizability over %d recorded operations...\n", len(ops))
 	linearizable, errDesc := harness.CheckLinearizability(ops)
