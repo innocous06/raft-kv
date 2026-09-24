@@ -16,7 +16,12 @@ func (n *Node) startElection() {
 	n.votesGranted = make(map[string]bool)
 	n.votesGranted[n.id] = true
 	n.leaderID = ""
-	n.persist()
+	if err := n.persist(); err != nil {
+		n.role = Follower
+		n.votedFor = ""
+		n.currentTerm--
+		return
+	}
 	n.resetElectionTimer()
 
 	term := n.currentTerm
@@ -162,8 +167,15 @@ func (n *Node) processRequestVote(req *RequestVoteRequest) *RequestVoteResponse 
 	canVote := (n.votedFor == "" || n.votedFor == req.CandidateID) && upToDate
 
 	if canVote {
+		prevVotedFor := n.votedFor
 		n.votedFor = req.CandidateID
-		n.persist()
+		if err := n.persist(); err != nil {
+			n.votedFor = prevVotedFor
+			return &RequestVoteResponse{
+				Term:        n.currentTerm,
+				VoteGranted: false,
+			}
+		}
 		n.resetElectionTimer()
 		n.events.Emit(n.id, events.VoteGranted, n.role.String(), n.currentTerm,
 			fmt.Sprintf("Granted vote to %s for term %d", req.CandidateID, req.Term), nil)

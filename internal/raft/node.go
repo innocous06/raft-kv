@@ -308,27 +308,32 @@ func (n *Node) randomElectionTimeout() time.Duration {
 }
 
 // persist stores currentTerm, votedFor, and log entries to storage.
-func (n *Node) persist() {
+func (n *Node) persist() error {
 	if n.storage == nil {
-		return
+		return nil
 	}
 	err := n.storage.SaveState(n.currentTerm, n.votedFor, n.log.AllEntries())
 	if err != nil {
 		n.events.Emit(n.id, events.EventType("StorageError"), n.role.String(), n.currentTerm,
 			fmt.Sprintf("Failed to persist state: %v", err), nil)
+		return err
 	}
+	return nil
 }
 
 // becomeFollower steps down to follower and updates term.
+// Only clears votedFor if moving to a strictly higher term.
 func (n *Node) becomeFollower(term uint64, leaderID string) {
 	prevRole := n.role
 	prevTerm := n.currentTerm
 
 	n.role = Follower
 	n.leaderID = leaderID
-	n.currentTerm = term
-	n.votedFor = ""
-	n.persist()
+	if term > n.currentTerm {
+		n.currentTerm = term
+		n.votedFor = ""
+	}
+	_ = n.persist()
 
 	if prevRole != Follower || prevTerm != term {
 		n.events.Emit(n.id, events.RoleChanged, n.role.String(), n.currentTerm,
@@ -353,7 +358,11 @@ func (n *Node) handlePropose(p proposeMsg) {
 	}
 
 	n.log.Append(entry)
-	n.persist()
+	if err := n.persist(); err != nil {
+		_ = n.log.Truncate(newIndex)
+		p.replyCh <- proposeResult{isLeader: false}
+		return
+	}
 
 	n.events.Emit(n.id, events.EntryAppended, n.role.String(), n.currentTerm,
 		fmt.Sprintf("Appended client entry index=%d term=%d", newIndex, newTerm), entry)
@@ -444,10 +453,11 @@ func (n *Node) GetNodeState() NodeState {
 				LeaderID:    n.leaderID,
 				CommitIndex: n.commitIndex,
 				LastApplied: n.lastApplied,
-				LastIndex:   n.log.LastIndex(),
-				LastTerm:    n.log.LastTerm(),
-				LogLength:   n.log.TotalCount(),
-				IsAlive:     atomic.LoadInt32(&n.stopped) == 0,
+				LastIndex:         n.log.LastIndex(),
+				LastTerm:          n.log.LastTerm(),
+				LastIncludedIndex: n.log.LastIncludedIndex(),
+				LogLength:         n.log.TotalCount(),
+				IsAlive:           atomic.LoadInt32(&n.stopped) == 0,
 			}
 		}),
 		reply: retCh,
