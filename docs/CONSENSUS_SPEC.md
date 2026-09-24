@@ -59,13 +59,21 @@ Raft-KV verifies client traces against this sequential specification using an in
 
 ---
 
-## 4. Formal Model Checking with TLC
+## 4. Bounded Model Checking with TLC
 
-The formal TLA+ specification in `specs/Raft.tla` and configuration `specs/MC.cfg` model-checks these properties across all reachable states:
+The formal TLA+ specification in `specs/Raft.tla` and configuration `specs/MC.cfg` evaluates these properties via bounded model checking:
 
 ```bash
 cd specs
 java -cp tla2tools.jar tlc2.TLC -dfid 8 -config MC.cfg MC.tla
 ```
 
-Verified state spaces demonstrate zero violations of `ElectionSafety`, `LogMatching`, and `LeaderCompleteness`.
+Bounded model checking to depth 8 explores 31,645 states with 0 invariant violations of `ElectionSafety`, `LogMatching`, and `LeaderCompleteness` under the model constants (3 servers, max term 3, max log length 3).
+
+---
+
+## 5. Storage Durability & Atomicity Boundaries
+
+* **No full append-only WAL:** Rather than maintaining a continuously appended file with inline compaction/truncation records, `DiskStorage` uses atomic snapshot-rewrite per persist. Each persist writes all uncompacted entries to a temporary file, fsyncs, and atomically renames it.
+* **Sequential rather than jointly atomic file replacement:** Metadata (`metadata.json`) and log entries (`wal.log`) are replaced sequentially rather than within a single multi-file transaction. Each file is individually fsynced and replaced atomically via `os.Rename`, followed by a directory `Sync()`. No crash-safe directory-level joint atomicity across power loss is claimed for the pair.
+

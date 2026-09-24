@@ -1,10 +1,10 @@
 # Raft-KV — Distributed Consensus Key-Value Store in Go
 
-> A clean, tested implementation of the Raft consensus algorithm in Go, featuring Write-Ahead Logging (WAL) with CRC32 torn-write recovery, snapshot compaction, state-machine deduplication, fault injection testing, and in-repo linearizability checking.
+> A clean, tested implementation of the Raft consensus algorithm in Go, featuring disk persistence with CRC32 torn-write recovery, snapshot compaction, state-machine deduplication, randomized fault injection testing, bounded TLA+ model checking, and in-repo linearizability checking.
 
 [![Interactive Simulator](https://img.shields.io/badge/Interactive%20Simulator-GitHub%20Pages-c28f2c.svg)](https://innocous06.github.io/raft-kv/)
 [![Go Version](https://img.shields.io/badge/Go-1.22+-2b2823.svg?logo=go)](https://golang.org)
-[![Test Suite](https://img.shields.io/badge/Tests-22%2F22%20Passing%20(1%2C000%20Seeded%20Runs)-2e4c23.svg)](#6-verification-matrix--chaos-testing)
+[![Test Suite](https://img.shields.io/badge/Tests-24%2F24%20Passing%20(1%2C000%20Randomized%20Runs)-2e4c23.svg)](#6-verification-matrix--chaos-testing)
 [![License: MIT](https://img.shields.io/badge/License-MIT-8c857b.svg)](LICENSE)
 
 ---
@@ -70,10 +70,11 @@ All mutable Raft consensus state (term, votedFor, log entries, commit index, rol
 ### 2. Sequential FIFO Log Application
 To ensure that entries are applied strictly in log order, commits are pushed to a synchronized FIFO queue (`applyQueue`) governed by `sync.Cond` and consumed by a sequential applier goroutine. Client waiter channels are backed by a ring cache of recently applied results to handle fast commits that complete before waiter registration.
 
-### 3. Write-Ahead Log (WAL) & Crash Recovery
+### 3. Log Persistence & Crash Recovery
+* **Storage Model:** Rather than an append-only WAL with inline truncation records, `storage.DiskStorage` uses atomic snapshot-rewrite per persist: each save writes all uncompacted entries to a temporary file, fsyncs, and atomically renames it.
 * **Framing Format:** `[Length: 4B][CRC32: 4B][Payload: NB]`
-* **Torn-Write Recovery:** On restart, `storage.DiskStorage` reads framed records and validates IEEE CRC32 checksums. If a crash produced a partial header (< 8 bytes) or corrupt payload at the tail, the file is safely truncated to the last valid boundary.
-* **Allocation Bounds:** Single WAL record lengths are capped at 32 MB, snapshot headers at 16 MB, and snapshot payloads at 256 MB to prevent corrupted length fields from triggering out-of-memory panics.
+* **Torn-Write Recovery:** On restart, `storage.DiskStorage` reads framed records and validates IEEE CRC32 checksums. If a crash or bit rot produced a partial header (< 8 bytes) or corrupt payload, the file is safely truncated to the last valid boundary.
+* **Allocation Bounds:** Single record lengths are capped at 32 MB, snapshot headers at 16 MB, and snapshot payloads at 256 MB to prevent corrupted length fields from triggering out-of-memory panics.
 
 ### 4. Snapshot Compaction with State Isolation
 When the log reaches the compaction threshold:
@@ -165,7 +166,7 @@ The test suite runs with zero external dependencies via `go test`:
 go test -v -count=1 ./harness
 ```
 
-### Test Suite Results (22 / 22 Passing)
+### Test Suite Results (24 / 24 Passing)
 
 | Test Identifier | Category | Scenario & Invariants Checked | Duration |
 | :--- | :--- | :--- | :--- |
@@ -175,15 +176,15 @@ go test -v -count=1 ./harness
 | `TestScenario4_KillLeaderUnderWriteLoad` | Churn | Consecutive leader crashes under continuous write traffic | 0.45s |
 | `TestScenario5_NetworkPartitionPartitionLeader` | Network Partition | Majority/minority split; isolated leader cannot commit; healed and unified | 0.70s |
 | `TestScenario6_SlowFollowerSnapshotCatchUp` | Log Compaction | Disconnected follower catches up via `InstallSnapshot` RPC | 0.63s |
-| `TestScenario7_RollingRestart` | Disk Persistence | Sequential restart of all nodes; state restored from WAL with zero data loss | 1.24s |
-| `TestScenario8_ChaosTestingAndLinearizability` | Verification | 90 chaotic operations verified against Wing & Gong sequential specification | 6.16s |
+| `TestScenario7_RollingRestart` | Disk Persistence | Sequential restart of all nodes; state restored from disk with zero data loss | 1.24s |
+| `TestScenario8_ChaosTestingAndLinearizability` | Linearizability | 90 chaotic operations checked against Wing & Gong sequential specification | 6.16s |
 | `TestEdgeCase_EmptyKeyHandling` | Boundary | Rejection of empty keys on PUT, GET, and DELETE | 0.14s |
 | `TestEdgeCase_DeduplicationAndIdempotency` | State Machine | Duplicate sequence numbers return cached results without re-execution | 0.14s |
 | `TestEdgeCase_MalformedCommandHandling` | Resilience | Corrupt log payloads handled without stalling `lastApplied` progression | 0.46s |
 | `TestEdgeCase_NonExistentNodeChaos` | Error Handling | Safe rejection of invalid node crash/restart requests | 0.00s |
 | `TestEdgeCase_AsymmetricPartition` | Network Fault | One-way link drops resolved without split brain or invariant violation | 1.10s |
 | `TestEdgeCase_HTTPAPIRoutes` | HTTP Protocol | Complete route suite testing methods, 404s, and malformed bodies | 0.19s |
-| `TestEdgeCase_HeavyConcurrentWritesAndReads` | Concurrency | 200 concurrent read/write ops across 8 workers; thread safety verified | 0.14s |
+| `TestEdgeCase_HeavyConcurrentWritesAndReads` | Concurrency | 200 concurrent read/write ops across 8 workers; thread safety confirmed | 0.14s |
 | `TestGrill_MassivePayloadStress` | Stress | Replicating and snapshotting 286 KB payloads; byte-level matching | 0.18s |
 | `TestGrill_CorruptWALRecovery` | Crash Recovery | Truncating torn 3-byte headers, corrupt CRC entries, and 4 GB claimed lengths | 0.02s |
 | `TestGrill_HTTPRouteBoundaryAndOversizedRejection` | Boundary | 5 MB body rejection (`http.MaxBytesReader`), whitespace keys, method checks | 0.69s |
@@ -191,9 +192,9 @@ go test -v -count=1 ./harness
 | `TestGrill_NetworkFlappingUnderWriteStorm` | Chaos | 164 writes during rapid split-brain flapping every 45ms; zero invariant breaks | 1.49s |
 | `TestGrill_CascadingNodeCrashAndRecovery` | Quorum Loss | 3 nodes killed, proposals blocked; 2 nodes revived, quorum recovered | 0.87s |
 | `TestChaos_MultiSeedFuzzing` | Multi-Seed | 30 deterministic seeds with artificial delays and invariant verification | 6.13s |
-| `TestChaos_1000SeededRuns` | Scale Chaos | 1,000 parallel seeded chaos runs under randomized delays and churn | 6.57s |
+| `TestChaos_1000SeededRuns` | Scale Chaos | 1,000 parallel randomized chaos runs under randomized delays and churn | 6.57s |
 
-**Result:** Passes 1,000 seeded chaos runs with 0 safety invariant violations.
+**Result:** Passes 1,000 randomized chaos runs with 0 safety invariant violations under real timers and wall-clock RNG.
 
 ---
 
@@ -229,18 +230,18 @@ Measured across randomized election cycles per cluster topology:
 
 ---
 
-## 8. Formal TLA+ Model Specifications
+## 8. Bounded TLA+ Model Specifications
 
-The repository includes a formal TLA+ specification of the Raft consensus safety kernel:
+The repository includes a formal TLA+ specification of the Raft consensus safety kernel evaluated via bounded model checking:
 
 * **Core Protocol Specification:** [`specs/Raft.tla`](specs/Raft.tla)
   * Defines state spaces: `currentTerm`, `state`, `votedFor`, `log`, `commitIndex`, and in-transit `messages`.
   * Specifies state actions: `Timeout`, `HandleRequestVoteRequest`, `BecomeLeader`, `ClientRequest`, `HandleAppendEntriesRequest`, and `AdvanceCommitIndex`.
   * Encodes safety invariants: `ElectionSafety`, `LogMatching`, and `LeaderCompleteness`.
-* **TLC Model Checking Configuration:** [`specs/MC.tla`](specs/MC.tla) & [`specs/MC.cfg`](specs/MC.cfg)
-  * Model-checked with the TLC Model Checker across 31,645 states to depth 8 with 0 invariant violations.
+* **Bounded TLC Model Checking Configuration:** [`specs/MC.tla`](specs/MC.tla) & [`specs/MC.cfg`](specs/MC.cfg)
+  * Explored with the TLC Model Checker via bounded model checking across 31,645 states to depth 8 with 0 invariant violations (constants: 3 servers, max term 3, max log length 3).
 
-To verify with TLC:
+To run the bounded model check with TLC:
 ```bash
 cd specs
 java -cp tla2tools.jar tlc2.TLC -dfid 8 -config MC.cfg MC.tla
@@ -269,7 +270,7 @@ See [`docs/bug-log.md`](docs/bug-log.md) for full reproduction steps, root cause
 
 To maintain clarity of scope, this implementation intentionally omits several features required for multi-tenant production deployments:
 
-* **Storage Architecture Trade-offs:** `DiskStorage` uses atomic snapshot-rewrite per persist rather than an append-only WAL with in-line truncation records. This provides straightforward CRC verification and torn-write protection at the cost of disk throughput (~119 ops/sec). Each file is individually fsynced and replaced atomically with parent directory fsync; the metadata and WAL files are replaced sequentially rather than jointly atomic across power loss.
+* **Storage Architecture Trade-offs:** Rather than maintaining a full append-only WAL with inline truncation records, `DiskStorage` uses atomic snapshot-rewrite per persist. This provides straightforward CRC verification and torn-write protection at the cost of disk throughput (~119 ops/sec). Each file is individually fsynced and replaced atomically via `os.Rename` with parent directory fsync; the metadata and log files are replaced sequentially. No full append-only WAL is implemented, and no crash-safe directory-level joint atomicity across power loss is claimed for multi-file replacements.
 * **No Dynamic Membership Changes (Raft §6):** Cluster membership is fixed at configuration time. Joint consensus and single-server reconfiguration are not implemented.
 * **No Pre-Vote Protocol (§9.6):** Partitioned nodes that reconnect with higher terms can force unnecessary re-elections upon rejoining the cluster.
 * **No Network Encryption / Authentication:** RPC communication uses plain JSON over HTTP and does not include TLS/mTLS or token-based authentication.
